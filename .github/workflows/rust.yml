@@ -17,18 +17,9 @@ jobs:
     container:
       image: rust:1.79
 
-    services:
-      nats:
-        image: nats
-        options: --network-alias nats
-
     steps:
     - uses: actions/checkout@v4
     - name: Build
       run: cargo build --verbose
-      env:
-        NATS_URL: "nats:4222"
     - name: Run tests
       run: cargo test --verbose
-      env:
-        NATS_URL: "nats:4222"
