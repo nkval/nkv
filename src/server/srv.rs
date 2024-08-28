@@ -137,7 +137,7 @@ impl Server {
                                     Self::handle_get(writer, get_tx.clone(), request).await
                                 }
                                 ServerRequest::Delete(BaseMessage { .. }) => {
-                                    Self::handle_basic_msg(writer, del_tx.clone(), request).await
+                                    Self::handle_delete(writer, del_tx.clone(), request).await
                                 }
                                 ServerRequest::Subscribe(BaseMessage { .. }) => {
                                     Self::handle_sub(writer, sub_tx.clone(), request, addr).await
@@ -238,7 +238,7 @@ impl Server {
         }
     }
 
-    async fn handle_basic_msg(
+    async fn handle_delete(
         writer: WriteStream,
         nkv_tx: mpsc::UnboundedSender<BaseMsg>,
         req: request_msg::ServerRequest,
