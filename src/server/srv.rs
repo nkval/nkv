@@ -2,7 +2,7 @@ use http::StatusCode;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 
 use ::nkv::nkv;
@@ -35,11 +35,6 @@ pub struct SubMsg {
     addr: SocketAddr,
     writer: WriteStream,
     resp_tx: mpsc::Sender<nkv::NotifyKeyValueError>,
-}
-
-pub struct NkvSubResp {
-    err: nkv::NotifyKeyValueError,
-    ealue: String,
 }
 
 // Note that IP addr is locked only when serve is called
@@ -120,13 +115,13 @@ impl Server {
             let (stream, addr) = listener.accept().await.unwrap();
             let (read_half, write_half) = split(stream);
             let mut reader = BufReader::new(read_half);
-            let mut writer = BufWriter::new(write_half);
+            let writer = BufWriter::new(write_half);
 
             tokio::spawn(async move {
                 let mut buffer = String::new();
                 // WARN: could be a bug place because stream is moved
                 // and we are using it to read stuff
-                buffer.clear();
+                //buffer.clear();
                 match reader.read_line(&mut buffer).await {
                     Ok(0) => {
                         // Connection was closed
@@ -278,14 +273,21 @@ impl Server {
         addr: SocketAddr,
     ) {
         match req {
-            request_msg::ServerRequest::Subscribe(request_msg::BaseMessage { id: _, key }) => {
-                let (resp_tx, resp_rx) = mpsc::channel(1);
+            request_msg::ServerRequest::Subscribe(request_msg::BaseMessage { id, key }) => {
+                let (resp_tx, _) = mpsc::channel(1);
                 let _ = nkv_tx.send(SubMsg {
                     key,
                     addr,
                     writer,
                     resp_tx,
                 });
+                // let nkv_resp = resp_rx.recv().await.unwrap();
+                // let resp = request_msg::BaseResp {
+                //     id,
+                //     status: nkv_resp.to_http_status(),
+                //     message: nkv_resp.to_string(),
+                // };
+                // Self::write_response(ServerResponse::Base(resp), writer).await;
             }
             _ => {
                 let resp = request_msg::BaseResp {
@@ -315,6 +317,8 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::nkv::notifier::Message;
+    use ::nkv::NatsClient;
     use tempfile::TempDir;
     use tokio;
 
@@ -330,6 +334,11 @@ mod tests {
         let put_tx = srv.put_tx();
         let get_tx = srv.get_tx();
         let del_tx = srv.del_tx();
+        let sub_tx = srv.sub_tx();
+
+        tokio::spawn(async move {
+            srv.serve().await;
+        });
 
         let value: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         let key = "key1".to_string();
@@ -353,6 +362,21 @@ mod tests {
         assert_eq!(got.err, nkv::NotifyKeyValueError::NoError);
         assert_eq!(got.value.unwrap(), value.into());
 
+        // create sub
+        let addr: SocketAddr = url.parse().expect("Unable to parse addr");
+        let stream = TcpStream::connect(&url).await.unwrap();
+        let (_, write) = tokio::io::split(stream);
+        let writer = BufWriter::new(write);
+
+        let _ = sub_tx.send(SubMsg {
+            key: key.clone(),
+            resp_tx: resp_tx.clone(),
+            addr,
+            writer,
+        });
+        let got = resp_rx.recv().await.unwrap();
+        assert_eq!(got, nkv::NotifyKeyValueError::NoError);
+
         let _ = del_tx.send(BaseMsg {
             key: key.clone(),
             resp_tx: resp_tx.clone(),
@@ -368,91 +392,113 @@ mod tests {
         assert_eq!(got.err, nkv::NotifyKeyValueError::NotFound);
     }
 
-    //    #[tokio::test]
-    //    async fn test_client_server() {
-    //        let temp_dir = TempDir::new().expect("Failed to create temporary directory");
-    //
-    //        // creates background task where it serves threads
-    //        let nats_url = env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
-    //
-    //        let _srv = Server::new(nats_url.clone(), temp_dir.path().to_path_buf())
-    //            .await
-    //            .unwrap();
-    //
-    //        let mut client = NatsClient::new(&nats_url).await.unwrap();
-    //
-    //        let value: Box<[u8]> = Box::new([9, 7, 3, 4, 5]);
-    //        let key = "test_2_key1".to_string();
-    //
-    //        let resp = client.put(key.clone(), value.clone()).await.unwrap();
-    //        assert_eq!(
-    //            resp,
-    //            request_msg::ServerResponse::Base(request_msg::BaseResp {
-    //                id: 0,
-    //                status: http::StatusCode::OK,
-    //                message: "No Error".to_string(),
-    //            })
-    //        );
-    //
-    //        let get_resp = client.get(key.clone()).await.unwrap();
-    //        assert_eq!(
-    //            get_resp,
-    //            request_msg::ServerResponse::Get(request_msg::DataResp {
-    //                base: request_msg::BaseResp {
-    //                    id: 0,
-    //                    status: http::StatusCode::OK,
-    //                    message: "No Error".to_string(),
-    //                },
-    //                data: value.to_vec(),
-    //            })
-    //        );
-    //
-    //        let err_get_resp = client.get("non-existent-key".to_string()).await.unwrap();
-    //        assert_eq!(
-    //            err_get_resp,
-    //            request_msg::ServerResponse::Get(request_msg::DataResp {
-    //                base: request_msg::BaseResp {
-    //                    id: 0,
-    //                    status: http::StatusCode::NOT_FOUND,
-    //                    message: "Not Found".to_string(),
-    //                },
-    //                data: Vec::new(),
-    //            })
-    //        );
-    //
-    //        let sub_resp = client.subscribe(key.clone()).await.unwrap();
-    //        assert_eq!(
-    //            sub_resp,
-    //            request_msg::ServerResponse::Put(request_msg::DataResp {
-    //                base: request_msg::BaseResp {
-    //                    id: 0,
-    //                    status: http::StatusCode::OK,
-    //                    message: "No Error".to_string(),
-    //                },
-    //                data: format!("pub-{}", key).as_bytes().to_vec(),
-    //            })
-    //        );
-    //
-    //        let del_resp = client.delete(key.clone()).await.unwrap();
-    //        assert_eq!(
-    //            del_resp,
-    //            request_msg::ServerResponse::Base(request_msg::BaseResp {
-    //                id: 0,
-    //                status: http::StatusCode::OK,
-    //                message: "No Error".to_string(),
-    //            })
-    //        );
-    //        let del_get_resp = client.get(key.clone()).await.unwrap();
-    //        assert_eq!(
-    //            del_get_resp,
-    //            request_msg::ServerResponse::Get(request_msg::DataResp {
-    //                base: request_msg::BaseResp {
-    //                    id: 0,
-    //                    status: http::StatusCode::NOT_FOUND,
-    //                    message: "Not Found".to_string(),
-    //                },
-    //                data: Vec::new(),
-    //            })
-    //        );
-    //    }
+    #[tokio::test]
+    async fn test_client_server() {
+        let temp_dir = TempDir::new().expect("Failed to create temporary directory");
+        let url = "127.0.0.1:8092";
+
+        let srv = Server::new(url.to_string(), temp_dir.path().to_path_buf())
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            srv.serve().await;
+        });
+
+        // Give time for server to get up
+        // TODO: need to create a notification channel
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        let mut client = NatsClient::new(&url);
+
+        let value: Box<[u8]> = Box::new([9, 7, 3, 4, 5]);
+        let key = "test_2_key1".to_string();
+
+        let resp = client.put(key.clone(), value.clone()).await.unwrap();
+        assert_eq!(
+            resp,
+            request_msg::ServerResponse::Base(request_msg::BaseResp {
+                id: 0,
+                status: http::StatusCode::OK,
+                message: "No Error".to_string(),
+            })
+        );
+
+        let get_resp = client.get(key.clone()).await.unwrap();
+        assert_eq!(
+            get_resp,
+            request_msg::ServerResponse::Get(request_msg::DataResp {
+                base: request_msg::BaseResp {
+                    id: 0,
+                    status: http::StatusCode::OK,
+                    message: "No Error".to_string(),
+                },
+                data: value.to_vec(),
+            })
+        );
+
+        let err_get_resp = client.get("non-existent-key".to_string()).await.unwrap();
+        assert_eq!(
+            err_get_resp,
+            request_msg::ServerResponse::Get(request_msg::DataResp {
+                base: request_msg::BaseResp {
+                    id: 0,
+                    status: http::StatusCode::NOT_FOUND,
+                    message: "Not Found".to_string(),
+                },
+                data: Vec::new(),
+            })
+        );
+
+        let sub_resp = client.subscribe(key.clone()).await.unwrap();
+        assert_eq!(
+            sub_resp,
+            request_msg::ServerResponse::Base(request_msg::BaseResp {
+                id: 0,
+                status: http::StatusCode::OK,
+                message: "OK".to_string(),
+            })
+        );
+        // Give server time to subscribe
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let new_value: Box<[u8]> = Box::new([42, 0, 1, 0, 1]);
+        let resp = client.put(key.clone(), new_value.clone()).await.unwrap();
+        assert_eq!(
+            resp,
+            request_msg::ServerResponse::Base(request_msg::BaseResp {
+                id: 0,
+                status: http::StatusCode::OK,
+                message: "No Error".to_string(),
+            })
+        );
+        assert_eq!(true, client.rx.as_mut().unwrap().changed().await.is_ok());
+        let msg = client.rx.as_mut().unwrap().borrow().clone();
+        assert_eq!(
+            msg,
+            Message::Update {
+                value: new_value.clone(),
+            },
+        );
+
+        let del_resp = client.delete(key.clone()).await.unwrap();
+        assert_eq!(
+            del_resp,
+            request_msg::ServerResponse::Base(request_msg::BaseResp {
+                id: 0,
+                status: http::StatusCode::OK,
+                message: "No Error".to_string(),
+            })
+        );
+        let del_get_resp = client.get(key.clone()).await.unwrap();
+        assert_eq!(
+            del_get_resp,
+            request_msg::ServerResponse::Get(request_msg::DataResp {
+                base: request_msg::BaseResp {
+                    id: 0,
+                    status: http::StatusCode::NOT_FOUND,
+                    message: "Not Found".to_string(),
+                },
+                data: Vec::new(),
+            })
+        );
+    }
 }

@@ -44,5 +44,5 @@ pub enum ServerResponse {
     Base(BaseResp),
     Get(DataResp),
     Put(DataResp),
-    Sub(BaseResp),
+    Sub(DataResp),
 }

@@ -1,19 +1,20 @@
 extern crate serde;
 extern crate serde_json;
 
+use crate::BaseMessage;
+use crate::ServerRequest;
 use serde::{Deserialize, Serialize};
 use serde_json::to_vec;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-use tokio::sync::Mutex;
+
+use tokio::io::{split, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{watch, Mutex};
 use tokio::time::{sleep, Duration};
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum Message {
     Hello,
     Update { value: Box<[u8]> },
@@ -79,23 +80,19 @@ impl Notifier {
     }
 }
 
-// impl Drop for Notifier {
-//     fn drop(&mut self) {
-//         let _ = self.send_close().await;
-//     }
-// }
-
 pub struct Subscriber {
     addr: String,
-    tx: mpsc::UnboundedSender<Message>,
+    key: String,
+    tx: watch::Sender<Message>,
 }
 
 impl Subscriber {
-    pub fn new(addr: &str) -> (Self, mpsc::UnboundedReceiver<Message>) {
-        let (tx, rx) = mpsc::unbounded_channel::<Message>();
+    pub fn new(addr: &str, key: &str) -> (Self, watch::Receiver<Message>) {
+        let (tx, rx) = watch::channel(Message::Hello);
         (
             Self {
                 addr: addr.to_string(),
+                key: key.to_string(),
                 tx,
             },
             rx,
@@ -113,11 +110,25 @@ impl Subscriber {
     }
 
     async fn connect(&self) -> tokio::io::Result<()> {
-        let mut stream = TcpStream::connect(&self.addr).await?;
+        let stream = TcpStream::connect(&self.addr).await?;
+        let (read_half, write_half) = stream.into_split();
+        let mut writer = BufWriter::new(write_half);
+        let mut reader = BufReader::new(read_half);
+
+        let req = ServerRequest::Subscribe(BaseMessage {
+            id: 0,
+            key: self.key.to_string(),
+        });
+        let req = serde_json::to_string(&req)?;
+        writer.write_all(req.as_bytes()).await?;
+        writer.write_all(b"\n").await?;
+        writer.flush().await?;
+        // TODO: Handle server response in case
+        // it is not found
 
         let mut buffer = [0; 1024];
         loop {
-            let n = stream.read(&mut buffer).await?;
+            let n = reader.read(&mut buffer).await?;
             if n == 0 {
                 continue;
             }
@@ -140,6 +151,7 @@ impl Subscriber {
 #[cfg(test)]
 mod tests {
 
+    use futures::io::BufReader;
     use tokio::net::TcpListener;
 
     use super::*;
@@ -149,9 +161,10 @@ mod tests {
         let srv_addr: SocketAddr = "127.0.0.1:8090"
             .parse()
             .expect("Unable to parse socket address");
+        let key = "AWESOME_KEY".to_string();
 
         let mut notifier = Notifier::new();
-        let (mut subscriber, mut rx) = Subscriber::new(srv_addr.to_string().as_str());
+        let (mut subscriber, mut rx) = Subscriber::new(srv_addr.to_string().as_str(), &key);
         let listener = TcpListener::bind(srv_addr).await.unwrap();
         let val: Box<[u8]> = "Bazinga".to_string().into_bytes().into_boxed_slice();
         let vc = val.clone();
@@ -160,19 +173,24 @@ mod tests {
             subscriber.start().await;
         });
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let (stream, addr) = listener.accept().await.unwrap();
-            let (_, write_half) = tokio::io::split(stream);
+            let (read_half, write_half) = split(stream);
+            let mut reader = tokio::io::BufReader::new(read_half);
             let writer = BufWriter::new(write_half);
+
+            let mut buffer = String::new();
+            let _ = reader.read_line(&mut buffer).await;
+
             notifier.subscribe(addr, writer).await;
             notifier.send_update(vc.clone()).await;
             sleep(Duration::from_secs(1)).await;
         });
 
-        if let Some(msg) = rx.recv().await {
-            assert_eq!(msg, Message::Update { value: val });
-        } else {
-            panic!("Did not receive the expected message");
-        }
+        handle.await.unwrap();
+
+        assert_eq!(true, rx.changed().await.is_ok());
+        let msg = rx.borrow();
+        assert_eq!(*msg, Message::Update { value: val });
     }
 }
