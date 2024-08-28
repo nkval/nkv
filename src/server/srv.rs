@@ -92,8 +92,12 @@ impl Server {
                        let _ = req.resp_tx.send(nkv::NotifyKeyValueError::NoError).await;
                    }
                    Some(req) = sub_rx.recv() => {
-                       nkv.subscribe(&req.key, req.addr, req.writer).await;
-                       let _ = req.resp_tx.send(nkv::NotifyKeyValueError::NoError).await;
+                       let mut err = nkv::NotifyKeyValueError::NoError;
+                       match nkv.subscribe(&req.key, req.addr, req.writer).await {
+                           Err(e) => { err = nkv::NotifyKeyValueError::NotifierError(e) }
+                           Ok(_) => {}
+                       }
+                       let _ = req.resp_tx.send(err).await;
                    }
                    Some(_) = cancel_rx.recv() => { cancelled = true }
                    else => { break; }
@@ -281,13 +285,6 @@ impl Server {
                     writer,
                     resp_tx,
                 });
-                // let nkv_resp = resp_rx.recv().await.unwrap();
-                // let resp = request_msg::BaseResp {
-                //     id,
-                //     status: nkv_resp.to_http_status(),
-                //     message: nkv_resp.to_string(),
-                // };
-                // Self::write_response(ServerResponse::Base(resp), writer).await;
             }
             _ => {
                 let resp = request_msg::BaseResp {
@@ -351,7 +348,7 @@ mod tests {
         });
 
         let message = resp_rx.recv().await.unwrap();
-        assert_eq!(message, nkv::NotifyKeyValueError::NoError);
+        assert!(matches!(message, nkv::NotifyKeyValueError::NoError));
 
         let (get_resp_tx, mut get_resp_rx) = mpsc::channel(1);
         let _ = get_tx.send(GetMsg {
@@ -359,7 +356,7 @@ mod tests {
             resp_tx: get_resp_tx.clone(),
         });
         let got = get_resp_rx.recv().await.unwrap();
-        assert_eq!(got.err, nkv::NotifyKeyValueError::NoError);
+        assert!(matches!(got.err, nkv::NotifyKeyValueError::NoError));
         assert_eq!(got.value.unwrap(), value.into());
 
         // create sub
@@ -375,21 +372,21 @@ mod tests {
             writer,
         });
         let got = resp_rx.recv().await.unwrap();
-        assert_eq!(got, nkv::NotifyKeyValueError::NoError);
+        assert!(matches!(got, nkv::NotifyKeyValueError::NoError));
 
         let _ = del_tx.send(BaseMsg {
             key: key.clone(),
             resp_tx: resp_tx.clone(),
         });
         let got = resp_rx.recv().await.unwrap();
-        assert_eq!(got, nkv::NotifyKeyValueError::NoError);
+        assert!(matches!(got, nkv::NotifyKeyValueError::NoError));
 
         let _ = get_tx.send(GetMsg {
             key: key.clone(),
             resp_tx: get_resp_tx.clone(),
         });
         let got = get_resp_rx.recv().await.unwrap();
-        assert_eq!(got.err, nkv::NotifyKeyValueError::NotFound);
+        assert!(matches!(got.err, nkv::NotifyKeyValueError::NotFound));
     }
 
     #[tokio::test]
@@ -448,6 +445,40 @@ mod tests {
             })
         );
 
+        let sub_resp = client
+            .subscribe("non-existent-key".to_string())
+            .await
+            .unwrap();
+        assert_eq!(
+            sub_resp,
+            request_msg::ServerResponse::Base(request_msg::BaseResp {
+                id: 0,
+                status: http::StatusCode::OK,
+                message: "OK".to_string(),
+            })
+        );
+        // Give server time to subscribe
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        assert_eq!(
+            true,
+            client
+                .subscriptions
+                .get_mut("non-existent-key")
+                .as_mut()
+                .unwrap()
+                .changed()
+                .await
+                .is_ok()
+        );
+        let msg = client
+            .subscriptions
+            .get_mut("non-existent-key")
+            .as_mut()
+            .unwrap()
+            .borrow()
+            .clone();
+        assert_eq!(msg, Message::NotFound);
+
         let sub_resp = client.subscribe(key.clone()).await.unwrap();
         assert_eq!(
             sub_resp,
@@ -470,8 +501,24 @@ mod tests {
                 message: "No Error".to_string(),
             })
         );
-        assert_eq!(true, client.rx.as_mut().unwrap().changed().await.is_ok());
-        let msg = client.rx.as_mut().unwrap().borrow().clone();
+        assert_eq!(
+            true,
+            client
+                .subscriptions
+                .get_mut(&key)
+                .as_mut()
+                .unwrap()
+                .changed()
+                .await
+                .is_ok()
+        );
+        let msg = client
+            .subscriptions
+            .get_mut(&key)
+            .as_mut()
+            .unwrap()
+            .borrow()
+            .clone();
         assert_eq!(
             msg,
             Message::Update {

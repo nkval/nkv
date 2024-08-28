@@ -3,15 +3,16 @@ use std::path::PathBuf;
 
 use std::sync::Arc;
 
-use crate::notifier::{Notifier, WriteStream};
+use crate::notifier::{Message, Notifier, NotifierError, WriteStream};
 use crate::persist_value::PersistValue;
 use std::fmt;
 use std::net::SocketAddr;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub enum NotifyKeyValueError {
     NoError,
     NotFound,
+    NotifierError(NotifierError),
 }
 
 impl NotifyKeyValueError {
@@ -19,6 +20,7 @@ impl NotifyKeyValueError {
         match self {
             NotifyKeyValueError::NotFound => http::StatusCode::NOT_FOUND,
             NotifyKeyValueError::NoError => http::StatusCode::OK,
+            NotifyKeyValueError::NotifierError(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 }
@@ -28,11 +30,20 @@ impl fmt::Display for NotifyKeyValueError {
         match self {
             NotifyKeyValueError::NotFound => write!(f, "Not Found"),
             NotifyKeyValueError::NoError => write!(f, "No Error"),
+            NotifyKeyValueError::NotifierError(e) => write!(f, "Notifier error {}", e),
         }
     }
 }
 
-impl std::error::Error for NotifyKeyValueError {}
+impl std::error::Error for NotifyKeyValueError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            NotifyKeyValueError::NoError => None,
+            NotifyKeyValueError::NotFound => None,
+            NotifyKeyValueError::NotifierError(e) => Some(e),
+        }
+    }
+}
 
 struct Value {
     pv: PersistValue,
@@ -78,9 +89,20 @@ impl NotifyKeyValue {
         self.state.remove(key);
     }
 
-    pub async fn subscribe(&mut self, key: &str, addr: SocketAddr, stream: WriteStream) {
+    pub async fn subscribe(
+        &mut self,
+        key: &str,
+        addr: SocketAddr,
+        mut stream: WriteStream,
+    ) -> Result<(), NotifierError> {
         if let Some(val) = self.state.get_mut(key) {
             val.notifier.subscribe(addr, stream).await;
+            Ok(())
+        } else {
+            // Send to client message that key was not found
+            let msg = Message::NotFound;
+            let json_bytes = serde_json::to_vec(&msg).unwrap();
+            Notifier::send_bytes(&json_bytes, &mut stream).await
         }
     }
 

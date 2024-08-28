@@ -6,12 +6,14 @@ pub mod request_msg;
 use crate::notifier::{Message, Subscriber};
 use crate::request_msg::*;
 
+use std::collections::HashMap;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 
 pub struct NkvClient {
     addr: String,
+    pub subscriptions: HashMap<String, watch::Receiver<Message>>,
     pub rx: Option<watch::Receiver<Message>>,
 }
 
@@ -19,6 +21,7 @@ impl NkvClient {
     pub fn new(addr: &str) -> Self {
         Self {
             addr: addr.to_string(),
+            subscriptions: HashMap::new(),
             rx: None,
         }
     }
@@ -43,7 +46,7 @@ impl NkvClient {
 
     pub async fn subscribe(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
         // we subscribe only once during client lifetime
-        if self.rx.is_some() {
+        if self.subscriptions.contains_key(&key) {
             return Ok(ServerResponse::Base(BaseResp {
                 id: 0,
                 status: http::StatusCode::OK,
@@ -57,7 +60,7 @@ impl NkvClient {
             subscriber.start().await;
         });
 
-        self.rx = Some(rx);
+        self.subscriptions.insert(key, rx);
 
         Ok(ServerResponse::Base(BaseResp {
             id: 0,

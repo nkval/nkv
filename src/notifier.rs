@@ -3,6 +3,7 @@ extern crate serde_json;
 
 use crate::BaseMessage;
 use crate::ServerRequest;
+use core::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::to_vec;
 use std::collections::HashMap;
@@ -14,11 +15,36 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex};
 use tokio::time::{sleep, Duration};
 
+#[derive(Debug)]
+pub enum NotifierError {
+    FailedToWriteMessage(tokio::io::Error),
+    FailedToFlushMessage(tokio::io::Error),
+}
+
+impl fmt::Display for NotifierError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NotifierError::FailedToWriteMessage(e) => write!(f, "Failed to Write Message: {}", e),
+            NotifierError::FailedToFlushMessage(e) => write!(f, "Failed to Flush Message: {}", e),
+        }
+    }
+}
+
+impl std::error::Error for NotifierError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            NotifierError::FailedToWriteMessage(e) => Some(e),
+            NotifierError::FailedToFlushMessage(e) => Some(e),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum Message {
     Hello,
     Update { value: Box<[u8]> },
     Close,
+    NotFound,
 }
 
 pub type WriteStream = BufWriter<tokio::io::WriteHalf<tokio::net::TcpStream>>;
@@ -44,20 +70,26 @@ impl Notifier {
         clients.remove(addr);
     }
 
+    pub async fn send_bytes(msg: &Vec<u8>, stream: &mut WriteStream) -> Result<(), NotifierError> {
+        if let Err(e) = stream.write_all(&msg).await {
+            return Err(NotifierError::FailedToWriteMessage(e));
+        }
+        if let Err(e) = stream.flush().await {
+            return Err(NotifierError::FailedToFlushMessage(e));
+        }
+        Ok(())
+    }
+
     async fn broadcast_message(&mut self, message: &Message) {
         let json_bytes = to_vec(&message).unwrap();
 
         let mut failed_addrs = Vec::new();
         let mut clients = self.clients.lock().await;
         for (addr, stream) in clients.iter_mut() {
-            if let Err(e) = stream.write_all(&json_bytes).await {
-                eprintln!("Failed to send message {} {}", addr, e);
+            if let Err(e) = Notifier::send_bytes(&json_bytes, stream).await {
+                eprintln!("broadcast message: {}", e);
                 failed_addrs.push(addr.clone());
                 continue;
-            }
-            if let Err(e) = stream.flush().await {
-                eprintln!("Failed to FLUSH {} {}", addr, e);
-                failed_addrs.push(addr.clone());
             }
         }
 
