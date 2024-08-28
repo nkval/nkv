@@ -318,7 +318,7 @@ impl Server {
 mod tests {
     use super::*;
     use ::nkv::notifier::Message;
-    use ::nkv::NatsClient;
+    use ::nkv::NkvClient;
     use tempfile::TempDir;
     use tokio;
 
@@ -407,7 +407,7 @@ mod tests {
         // Give time for server to get up
         // TODO: need to create a notification channel
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        let mut client = NatsClient::new(&url);
+        let mut client = NkvClient::new(&url);
 
         let value: Box<[u8]> = Box::new([9, 7, 3, 4, 5]);
         let key = "test_2_key1".to_string();

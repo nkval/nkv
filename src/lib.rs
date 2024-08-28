@@ -10,12 +10,12 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 
-pub struct NatsClient {
+pub struct NkvClient {
     addr: String,
     pub rx: Option<watch::Receiver<Message>>,
 }
 
-impl NatsClient {
+impl NkvClient {
     pub fn new(addr: &str) -> Self {
         Self {
             addr: addr.to_string(),

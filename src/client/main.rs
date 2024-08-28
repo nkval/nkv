@@ -2,7 +2,7 @@ use std::env;
 use std::io::{self, Write};
 
 use nkv::request_msg;
-use nkv::NatsClient;
+use nkv::NkvClient;
 
 const DEFAULT_URL: &str = "localhost:4222";
 
@@ -15,7 +15,7 @@ async fn main() {
     } else {
         DEFAULT_URL
     };
-    let mut client = NatsClient::new(&url);
+    let mut client = NkvClient::new(&url);
 
     loop {
         let mut input = String::new();
