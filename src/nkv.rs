@@ -85,7 +85,13 @@ impl NotifyKeyValue {
             .map(|value| Arc::clone(&value.pv.data()))
     }
 
-    pub fn delete(&mut self, key: &str) {
+    pub async fn delete(&mut self, key: &str) {
+        if let Some(val) = self.state.get_mut(key) {
+            match val.notifier.unsubscribe_all().await {
+                Ok(_) => (),
+                Err(e) => eprintln!("delete: unsubscribe_all failed {}", e),
+            }
+        }
         self.state.remove(key);
     }
 
@@ -108,7 +114,10 @@ impl NotifyKeyValue {
 
     pub async fn unsubscribe(&mut self, key: &str, addr: &SocketAddr) {
         if let Some(val) = self.state.get_mut(key) {
-            val.notifier.unsubscribe(addr).await;
+            match val.notifier.unsubscribe(addr).await {
+                Ok(_) => (),
+                Err(e) => eprintln!("Failed to unsubscribe {}", e),
+            }
         }
     }
 }
@@ -153,7 +162,7 @@ mod tests {
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data.clone()).await;
 
-        nkv.delete("key1");
+        nkv.delete("key1").await;
         let result = nkv.get("key1");
         assert_eq!(result, None);
 

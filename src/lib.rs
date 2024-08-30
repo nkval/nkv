@@ -7,14 +7,29 @@ use crate::notifier::{Message, Subscriber};
 use crate::request_msg::*;
 
 use std::collections::HashMap;
+use std::fmt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 
+#[derive(Debug)]
+pub enum NkvClientError {
+    SubscriptionNotFound(String),
+}
+
+impl fmt::Display for NkvClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NkvClientError::SubscriptionNotFound(s) => write!(f, "Subscription not found {}", s),
+        }
+    }
+}
+
+impl std::error::Error for NkvClientError {}
+
 pub struct NkvClient {
     addr: String,
-    pub subscriptions: HashMap<String, watch::Receiver<Message>>,
-    pub rx: Option<watch::Receiver<Message>>,
+    subscriptions: HashMap<String, watch::Receiver<Message>>,
 }
 
 impl NkvClient {
@@ -22,7 +37,6 @@ impl NkvClient {
         Self {
             addr: addr.to_string(),
             subscriptions: HashMap::new(),
-            rx: None,
         }
     }
 
@@ -49,8 +63,8 @@ impl NkvClient {
         if self.subscriptions.contains_key(&key) {
             return Ok(ServerResponse::Base(BaseResp {
                 id: 0,
-                status: http::StatusCode::OK,
-                message: "ALREADY SUBSCRIBED".to_string(),
+                status: http::StatusCode::FOUND,
+                message: "Already Subscribed".to_string(),
             }));
         }
 
@@ -65,8 +79,21 @@ impl NkvClient {
         Ok(ServerResponse::Base(BaseResp {
             id: 0,
             status: http::StatusCode::OK,
-            message: "OK".to_string(),
+            message: "Subscribed".to_string(),
         }))
+    }
+
+    pub async fn latest_state(&mut self, key: &str) -> Result<Message, NkvClientError> {
+        match self.subscriptions.get_mut(key) {
+            Some(val) => {
+                if val.changed().await.is_ok() {
+                    Ok(val.borrow().to_owned())
+                } else {
+                    return Err(NkvClientError::SubscriptionNotFound(key.to_string()));
+                }
+            }
+            None => Err(NkvClientError::SubscriptionNotFound(key.to_string())),
+        }
     }
 
     async fn send_request(&mut self, request: &ServerRequest) -> tokio::io::Result<ServerResponse> {

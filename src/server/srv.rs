@@ -88,7 +88,7 @@ impl Server {
                         };
                    }
                    Some(req) = del_rx.recv() => {
-                       nkv.delete(&req.key);
+                       nkv.delete(&req.key).await;
                        let _ = req.resp_tx.send(nkv::NotifyKeyValueError::NoError).await;
                    }
                    Some(req) = sub_rx.recv() => {
@@ -123,9 +123,6 @@ impl Server {
 
             tokio::spawn(async move {
                 let mut buffer = String::new();
-                // WARN: could be a bug place because stream is moved
-                // and we are using it to read stuff
-                //buffer.clear();
                 match reader.read_line(&mut buffer).await {
                     Ok(0) => {
                         // Connection was closed
@@ -277,7 +274,7 @@ impl Server {
         addr: SocketAddr,
     ) {
         match req {
-            request_msg::ServerRequest::Subscribe(request_msg::BaseMessage { id, key }) => {
+            request_msg::ServerRequest::Subscribe(request_msg::BaseMessage { id: _, key }) => {
                 let (resp_tx, _) = mpsc::channel(1);
                 let _ = nkv_tx.send(SubMsg {
                     key,
@@ -454,30 +451,17 @@ mod tests {
             request_msg::ServerResponse::Base(request_msg::BaseResp {
                 id: 0,
                 status: http::StatusCode::OK,
-                message: "OK".to_string(),
+                message: "Subscribed".to_string(),
             })
         );
         // Give server time to subscribe
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        assert_eq!(
-            true,
-            client
-                .subscriptions
-                .get_mut("non-existent-key")
-                .as_mut()
-                .unwrap()
-                .changed()
-                .await
-                .is_ok()
-        );
-        let msg = client
-            .subscriptions
-            .get_mut("non-existent-key")
-            .as_mut()
-            .unwrap()
-            .borrow()
-            .clone();
-        assert_eq!(msg, Message::NotFound);
+        let result = client.latest_state("non-existent-key").await;
+        assert!(result.is_ok());
+        match result {
+            Ok(val) => assert_eq!(val, Message::NotFound),
+            _ => panic!("Expected SubscriptionError"),
+        }
 
         let sub_resp = client.subscribe(key.clone()).await.unwrap();
         assert_eq!(
@@ -485,7 +469,7 @@ mod tests {
             request_msg::ServerResponse::Base(request_msg::BaseResp {
                 id: 0,
                 status: http::StatusCode::OK,
-                message: "OK".to_string(),
+                message: "Subscribed".to_string(),
             })
         );
         // Give server time to subscribe
@@ -501,30 +485,14 @@ mod tests {
                 message: "No Error".to_string(),
             })
         );
-        assert_eq!(
-            true,
-            client
-                .subscriptions
-                .get_mut(&key)
-                .as_mut()
-                .unwrap()
-                .changed()
-                .await
-                .is_ok()
-        );
-        let msg = client
-            .subscriptions
-            .get_mut(&key)
-            .as_mut()
-            .unwrap()
-            .borrow()
-            .clone();
-        assert_eq!(
-            msg,
-            Message::Update {
-                value: new_value.clone(),
-            },
-        );
+        let result = client.latest_state(&key).await;
+        assert!(result.is_ok());
+        match result {
+            Ok(Message::Update { value }) => {
+                assert_eq!(value, new_value)
+            }
+            _ => panic!("Expected no errors"),
+        }
 
         let del_resp = client.delete(key.clone()).await.unwrap();
         assert_eq!(
@@ -535,6 +503,13 @@ mod tests {
                 message: "No Error".to_string(),
             })
         );
+        let result = client.latest_state(&key).await;
+        assert!(result.is_ok());
+        match result {
+            Ok(Message::Close) => (),
+            _ => panic!("Expected close message"),
+        };
+
         let del_get_resp = client.get(key.clone()).await.unwrap();
         assert_eq!(
             del_get_resp,

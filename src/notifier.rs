@@ -10,8 +10,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tokio::io::{split, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::net::TcpStream;
 use tokio::sync::{watch, Mutex};
 use tokio::time::{sleep, Duration};
 
@@ -19,6 +19,7 @@ use tokio::time::{sleep, Duration};
 pub enum NotifierError {
     FailedToWriteMessage(tokio::io::Error),
     FailedToFlushMessage(tokio::io::Error),
+    SubscribtionNotFound,
 }
 
 impl fmt::Display for NotifierError {
@@ -26,6 +27,7 @@ impl fmt::Display for NotifierError {
         match self {
             NotifierError::FailedToWriteMessage(e) => write!(f, "Failed to Write Message: {}", e),
             NotifierError::FailedToFlushMessage(e) => write!(f, "Failed to Flush Message: {}", e),
+            NotifierError::SubscribtionNotFound => write!(f, "Subscription not found"),
         }
     }
 }
@@ -35,6 +37,7 @@ impl std::error::Error for NotifierError {
         match self {
             NotifierError::FailedToWriteMessage(e) => Some(e),
             NotifierError::FailedToFlushMessage(e) => Some(e),
+            NotifierError::SubscribtionNotFound => None,
         }
     }
 }
@@ -65,9 +68,24 @@ impl Notifier {
         subscribers.insert(addr, stream);
     }
 
-    pub async fn unsubscribe(&self, addr: &SocketAddr) {
+    pub async fn unsubscribe(&self, addr: &SocketAddr) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
+        match clients.get_mut(&addr) {
+            Some(stream) => Notifier::send_bytes(&to_vec(&Message::Close).unwrap(), stream).await?,
+            None => return Err(NotifierError::SubscribtionNotFound),
+        }
         clients.remove(addr);
+        Ok(())
+    }
+
+    pub async fn unsubscribe_all(&self) -> Result<(), NotifierError> {
+        let mut clients = self.clients.lock().await;
+
+        for (_, mut stream) in clients.drain() {
+            Notifier::send_bytes(&to_vec(&Message::Close).unwrap(), &mut stream).await?;
+        }
+
+        Ok(())
     }
 
     pub async fn send_bytes(msg: &Vec<u8>, stream: &mut WriteStream) -> Result<(), NotifierError> {
@@ -94,7 +112,10 @@ impl Notifier {
         }
 
         for addr in failed_addrs {
-            self.unsubscribe(&addr).await;
+            match self.unsubscribe(&addr).await {
+                Ok(_) => {}
+                Err(e) => eprintln!("Failed to unsubscribe: {}", e),
+            }
         }
     }
 
@@ -155,8 +176,6 @@ impl Subscriber {
         writer.write_all(req.as_bytes()).await?;
         writer.write_all(b"\n").await?;
         writer.flush().await?;
-        // TODO: Handle server response in case
-        // it is not found
 
         let mut buffer = [0; 1024];
         loop {
@@ -182,11 +201,9 @@ impl Subscriber {
 
 #[cfg(test)]
 mod tests {
-
-    use futures::io::BufReader;
-    use tokio::net::TcpListener;
-
     use super::*;
+    use tokio::io::{split, AsyncBufReadExt};
+    use tokio::net::TcpListener;
 
     #[tokio::test]
     async fn test_send_update() {
