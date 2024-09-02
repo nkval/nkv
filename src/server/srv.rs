@@ -47,14 +47,14 @@ pub struct Server {
 }
 
 impl Server {
-    pub async fn new(addr: String, path: std::path::PathBuf) -> Result<Self, async_nats::Error> {
+    pub async fn new(addr: String, path: std::path::PathBuf) -> std::io::Result<Self> {
         let (put_tx, mut put_rx) = mpsc::unbounded_channel::<PutMsg>();
         let (get_tx, mut get_rx) = mpsc::unbounded_channel::<GetMsg>();
         let (del_tx, mut del_rx) = mpsc::unbounded_channel::<BaseMsg>();
         let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<SubMsg>();
         let (_cancel_tx, mut cancel_rx) = mpsc::unbounded_channel::<BaseMsg>();
 
-        let mut nkv = nkv::NotifyKeyValue::new(path);
+        let mut nkv = nkv::NotifyKeyValue::new(path)?;
         let addr: SocketAddr = addr.parse().expect("Unable to parse addr");
 
         let srv = Self {
@@ -88,8 +88,11 @@ impl Server {
                         };
                    }
                    Some(req) = del_rx.recv() => {
-                       nkv.delete(&req.key).await;
-                       let _ = req.resp_tx.send(nkv::NotifyKeyValueError::NoError).await;
+                       let err = match nkv.delete(&req.key).await {
+                           Ok(_) => nkv::NotifyKeyValueError::NoError,
+                           Err(e) => e,
+                       };
+                       let _ = req.resp_tx.send(err).await;
                    }
                    Some(req) = sub_rx.recv() => {
                        let mut err = nkv::NotifyKeyValueError::NoError;

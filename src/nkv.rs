@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use std::fs;
+use std::io;
 use std::sync::Arc;
 
 use crate::notifier::{Message, Notifier, NotifierError, WriteStream};
@@ -13,6 +15,7 @@ pub enum NotifyKeyValueError {
     NoError,
     NotFound,
     NotifierError(NotifierError),
+    IoError(std::io::Error),
 }
 
 impl NotifyKeyValueError {
@@ -21,7 +24,20 @@ impl NotifyKeyValueError {
             NotifyKeyValueError::NotFound => http::StatusCode::NOT_FOUND,
             NotifyKeyValueError::NoError => http::StatusCode::OK,
             NotifyKeyValueError::NotifierError(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
+            NotifyKeyValueError::IoError(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
         }
+    }
+}
+
+impl From<NotifierError> for NotifyKeyValueError {
+    fn from(error: NotifierError) -> Self {
+        NotifyKeyValueError::NotifierError(error)
+    }
+}
+
+impl From<std::io::Error> for NotifyKeyValueError {
+    fn from(error: std::io::Error) -> Self {
+        NotifyKeyValueError::IoError(error)
     }
 }
 
@@ -31,6 +47,7 @@ impl fmt::Display for NotifyKeyValueError {
             NotifyKeyValueError::NotFound => write!(f, "Not Found"),
             NotifyKeyValueError::NoError => write!(f, "No Error"),
             NotifyKeyValueError::NotifierError(e) => write!(f, "Notifier error {}", e),
+            NotifyKeyValueError::IoError(e) => write!(f, "IO error {}", e),
         }
     }
 }
@@ -41,6 +58,7 @@ impl std::error::Error for NotifyKeyValueError {
             NotifyKeyValueError::NoError => None,
             NotifyKeyValueError::NotFound => None,
             NotifyKeyValueError::NotifierError(e) => Some(e),
+            NotifyKeyValueError::IoError(e) => Some(e),
         }
     }
 }
@@ -56,11 +74,49 @@ pub struct NotifyKeyValue {
 }
 
 impl NotifyKeyValue {
-    pub fn new(path: std::path::PathBuf) -> Self {
-        Self {
+    pub fn new(path: std::path::PathBuf) -> std::io::Result<Self> {
+        let mut res = Self {
             state: HashMap::new(),
             persist_path: path,
+        };
+
+        if !res.persist_path.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("{:?} is a file, not a directory", res.persist_path),
+            ));
         }
+
+        for entry in fs::read_dir(&res.persist_path)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.is_file() {
+                match path.file_name() {
+                    Some(fp) => {
+                        let key = fp.to_str().unwrap();
+                        let val = PersistValue::from_checkpoint(&path)?;
+                        let notifier = Notifier::new();
+
+                        res.state
+                            .insert(key.to_string(), Value { pv: val, notifier });
+                    }
+                    None => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            format!("{:?} is a directory, not a file", path),
+                        ))
+                    }
+                }
+            } else if path.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("{:?} is a directory, not a file", path),
+                ));
+            }
+        }
+
+        Ok(res)
     }
 
     pub async fn put(&mut self, key: &str, value: Box<[u8]>) {
@@ -85,14 +141,13 @@ impl NotifyKeyValue {
             .map(|value| Arc::clone(&value.pv.data()))
     }
 
-    pub async fn delete(&mut self, key: &str) {
+    pub async fn delete(&mut self, key: &str) -> Result<(), NotifyKeyValueError> {
         if let Some(val) = self.state.get_mut(key) {
-            match val.notifier.unsubscribe_all().await {
-                Ok(_) => (),
-                Err(e) => eprintln!("delete: unsubscribe_all failed {}", e),
-            }
+            val.notifier.unsubscribe_all().await?;
+            val.pv.delete_checkpoint()?;
         }
         self.state.remove(key);
+        Ok(())
     }
 
     pub async fn subscribe(
@@ -132,7 +187,7 @@ mod tests {
     #[tokio::test]
     async fn test_put_and_get() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf());
+        let mut nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data.clone()).await;
@@ -146,7 +201,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_nonexistent_key() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf());
+        let nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf())?;
 
         let result = nkv.get("nonexistent_key");
         assert_eq!(result, None);
@@ -157,12 +212,12 @@ mod tests {
     #[tokio::test]
     async fn test_delete() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf());
+        let mut nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data.clone()).await;
 
-        nkv.delete("key1").await;
+        nkv.delete("key1").await?;
         let result = nkv.get("key1");
         assert_eq!(result, None);
 
@@ -172,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_value() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf());
+        let mut nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data).await;
@@ -182,6 +237,34 @@ mod tests {
 
         let result = nkv.get("key1");
         assert_eq!(result, Some(Arc::from(new_data)));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_load_nkv() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let path = temp_dir.path().to_path_buf();
+        let data1: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
+        let data2: Box<[u8]> = Box::new([5, 6, 7, 8, 9]);
+        let data3: Box<[u8]> = Box::new([10, 11, 12, 13, 14]);
+
+        {
+            let mut nkv = NotifyKeyValue::new(path.clone())?;
+            nkv.put("key1", data1.clone()).await;
+            nkv.put("key2", data2.clone()).await;
+            nkv.put("key3", data3.clone()).await;
+        }
+
+        let nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf())?;
+        let result = nkv.get("key1");
+        assert_eq!(result, Some(Arc::from(data1)));
+
+        let result = nkv.get("key2");
+        assert_eq!(result, Some(Arc::from(data2)));
+
+        let result = nkv.get("key3");
+        assert_eq!(result, Some(Arc::from(data3)));
 
         Ok(())
     }
