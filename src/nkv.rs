@@ -1,3 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// NotifyKeyValue structure is a persistent key-value
+// storage with ability to notify clients about changes
+// made in a value. When created via new() it will try to
+// load values from folder. Underlying structure is a HashMap
+// and designed to be access synchronously.
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 

@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// NkvClient is a structure which is used to
+// communicate with Server to get, put, subscribe
+// and unsubscribe to a value
+
 pub mod nkv;
 pub mod notifier;
 mod persist_value;

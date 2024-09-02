@@ -1,3 +1,19 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// Notifier structure is a structure which broadcasts messages
+// to all subscribed clients (Subscriber structure). Possible
+// messages are following:
+//
+// - Hello -- is sent when the connection is established between
+// Subscriber and Notifier
+//
+// - Update -- sent new value converted into byte array
+//
+// - Close -- when the Notifier is closed
+//
+// - NotFound -- when Subscriber is trying to subscribe to Notifier
+// with a value which is not there
+
 extern crate serde;
 extern crate serde_json;
 

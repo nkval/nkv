@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// Server gives you an asynchronous access to a NotifyKeyValue storage.
+// You can get it within the same procees from same or another thread
+// using channels or from another program using tcp socket, for message
+// format you can check request_msg.rs
+
 use http::StatusCode;
 use std::net::SocketAddr;
 use std::sync::Arc;

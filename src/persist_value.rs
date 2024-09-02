@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// PersistValue stores a value of byte arrays
+// on a file system. Writing to a disk is an
+// atomic operation
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};

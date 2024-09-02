@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// This file contains common messages which are
+// used between NkvClient and Server
+
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 
