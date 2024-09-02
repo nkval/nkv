@@ -410,7 +410,7 @@ mod tests {
 
         // Give time for server to get up
         // TODO: need to create a notification channel
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let mut client = NkvClient::new(&url);
 
         let value: Box<[u8]> = Box::new([9, 7, 3, 4, 5]);
