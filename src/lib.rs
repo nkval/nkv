@@ -11,6 +11,7 @@ use std::fmt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub enum NkvClientError {
@@ -40,21 +41,34 @@ impl NkvClient {
         }
     }
 
+    fn uuid() -> String {
+        "rust-nkv-client".to_string() + &Uuid::new_v4().to_string()
+    }
+
     pub async fn get(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
-        let req = ServerRequest::Get(BaseMessage { id: 0, key });
+        let req = ServerRequest::Get(BaseMessage {
+            id: Self::uuid(),
+            key,
+        });
         self.send_request(&req).await
     }
 
     pub async fn put(&mut self, key: String, val: Box<[u8]>) -> tokio::io::Result<ServerResponse> {
         let req = ServerRequest::Put(PutMessage {
-            base: BaseMessage { id: 0, key },
+            base: BaseMessage {
+                id: Self::uuid(),
+                key,
+            },
             value: val,
         });
         self.send_request(&req).await
     }
 
     pub async fn delete(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
-        let req = ServerRequest::Delete(BaseMessage { id: 0, key });
+        let req = ServerRequest::Delete(BaseMessage {
+            id: Self::uuid(),
+            key,
+        });
         self.send_request(&req).await
     }
 
@@ -62,7 +76,7 @@ impl NkvClient {
         // we subscribe only once during client lifetime
         if self.subscriptions.contains_key(&key) {
             return Ok(ServerResponse::Base(BaseResp {
-                id: 0,
+                id: Self::uuid(),
                 status: http::StatusCode::FOUND,
                 message: "Already Subscribed".to_string(),
             }));
@@ -77,7 +91,7 @@ impl NkvClient {
         self.subscriptions.insert(key, rx);
 
         Ok(ServerResponse::Base(BaseResp {
-            id: 0,
+            id: Self::uuid(),
             status: http::StatusCode::OK,
             message: "Subscribed".to_string(),
         }))

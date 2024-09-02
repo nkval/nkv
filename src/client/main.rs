@@ -47,7 +47,7 @@ async fn main() {
                         assert_eq!(
                             resp,
                             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                                id: 0,
+                                id: "0".to_string(),
                                 status: http::StatusCode::OK,
                                 message: "No Error".to_string(),
                             })
@@ -62,7 +62,7 @@ async fn main() {
                         assert_eq!(
                             resp,
                             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                                id: 0,
+                                id: "0".to_string(),
                                 status: http::StatusCode::OK,
                                 message: "No Error".to_string(),
                             })
@@ -77,7 +77,7 @@ async fn main() {
                         assert_eq!(
                             resp,
                             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                                id: 0,
+                                id: "0".to_string(),
                                 status: http::StatusCode::OK,
                                 message: "No Error".to_string(),
                             })

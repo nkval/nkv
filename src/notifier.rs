@@ -169,7 +169,7 @@ impl Subscriber {
         let mut reader = BufReader::new(read_half);
 
         let req = ServerRequest::Subscribe(BaseMessage {
-            id: 0,
+            id: "0".to_string(),
             key: self.key.to_string(),
         });
         let req = serde_json::to_string(&req)?;

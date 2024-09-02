@@ -195,7 +195,7 @@ impl Server {
             }
             _ => {
                 let resp = request_msg::BaseResp {
-                    id: 0,
+                    id: "0".to_string(),
                     status: StatusCode::INTERNAL_SERVER_ERROR,
                     message: "wrong message for put handle".to_string(),
                 };
@@ -233,7 +233,7 @@ impl Server {
             }
             _ => {
                 let resp = request_msg::BaseResp {
-                    id: 0,
+                    id: "0".to_string(),
                     status: StatusCode::INTERNAL_SERVER_ERROR,
                     message: "wrong message for get  handle".to_string(),
                 };
@@ -261,7 +261,7 @@ impl Server {
             }
             _ => {
                 let resp = request_msg::BaseResp {
-                    id: 0,
+                    id: "0".to_string(),
                     status: StatusCode::INTERNAL_SERVER_ERROR,
                     message: "wrong message for the handle".to_string(),
                 };
@@ -288,7 +288,7 @@ impl Server {
             }
             _ => {
                 let resp = request_msg::BaseResp {
-                    id: 0,
+                    id: "0".to_string(),
                     status: StatusCode::INTERNAL_SERVER_ERROR,
                     message: "wrong message for sub handle".to_string(),
                 };
@@ -413,7 +413,7 @@ mod tests {
         assert_eq!(
             resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: 0,
+                id: "0".to_string(),
                 status: http::StatusCode::OK,
                 message: "No Error".to_string(),
             })
@@ -424,7 +424,7 @@ mod tests {
             get_resp,
             request_msg::ServerResponse::Get(request_msg::DataResp {
                 base: request_msg::BaseResp {
-                    id: 0,
+                    id: "0".to_string(),
                     status: http::StatusCode::OK,
                     message: "No Error".to_string(),
                 },
@@ -437,7 +437,7 @@ mod tests {
             err_get_resp,
             request_msg::ServerResponse::Get(request_msg::DataResp {
                 base: request_msg::BaseResp {
-                    id: 0,
+                    id: "0".to_string(),
                     status: http::StatusCode::NOT_FOUND,
                     message: "Not Found".to_string(),
                 },
@@ -452,7 +452,7 @@ mod tests {
         assert_eq!(
             sub_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: 0,
+                id: "0".to_string(),
                 status: http::StatusCode::OK,
                 message: "Subscribed".to_string(),
             })
@@ -470,7 +470,7 @@ mod tests {
         assert_eq!(
             sub_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: 0,
+                id: "0".to_string(),
                 status: http::StatusCode::OK,
                 message: "Subscribed".to_string(),
             })
@@ -483,7 +483,7 @@ mod tests {
         assert_eq!(
             resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: 0,
+                id: "0".to_string(),
                 status: http::StatusCode::OK,
                 message: "No Error".to_string(),
             })
@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(
             del_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: 0,
+                id: "0".to_string(),
                 status: http::StatusCode::OK,
                 message: "No Error".to_string(),
             })
@@ -518,7 +518,7 @@ mod tests {
             del_get_resp,
             request_msg::ServerResponse::Get(request_msg::DataResp {
                 base: request_msg::BaseResp {
-                    id: 0,
+                    id: "0".to_string(),
                     status: http::StatusCode::NOT_FOUND,
                     message: "Not Found".to_string(),
                 },
