@@ -50,20 +50,27 @@ To use the client library in your Rust project:
 
 ```rust
 let url = "localhost:4222".to_string();
-let client = nkv::NatsClient::new(&url).await.unwrap();
+let mut client = NkvClient::new(&url);
 
-let value: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
+let value: Box<[u8]> = Box::new([9, 7, 3, 4, 5]);
 let key = "test_2_key1".to_string();
 
-_ = client.put(key.clone(), value.clone()).await.unwrap();
+let resp = client.put(key.clone(), value.clone()).await.unwrap();
+print!("{:?}", resp);
+// status: 200
+// message: "No Error"
 
 let get_resp = client.get(key.clone()).await.unwrap();
-// [1, 2, 3, 4, 5] wrapped into ServerResponse
-print!("{:?}", get_resp);
+print!("{:?}", resp);
+// status: 200
+// message: "No Error"
+// data: [9, 7, 3, 4, 5]
 
-// topic to subscribe to using NATS
 let sub_resp = client.subscribe(key.clone()).await.unwrap();
 print!("{:?}", sub_resp);
+// status: 200
+// message: "Subscribed"
+
 
 _ = client.delete(key.clone()).await.unwrap();
 ```
@@ -72,10 +79,14 @@ To use the server in your rust project:
 
 ```rust
 let temp_dir = TempDir::new().expect("Failed to create temporary directory");
-let nats_url = env::var("NATS_URL")
-            .unwrap_or_else(|_| "nats://localhost:4222".to_string());
+let url = "127.0.0.1:8092";
 
-let srv = nkv::server::Server::new(nats_url.to_string(), temp_dir.path().to_path_buf()).await.unwrap();
+let srv = Server::new(url.to_string(), temp_dir.path().to_path_buf())
+    .await
+    .unwrap();
+tokio::spawn(async move {
+    srv.serve().await;
+});
 ```
 
 ### In the server, can I use it between threads inside one program?
@@ -84,14 +95,20 @@ Yep, you can use channels to communicate with server
 
 ```rust
 let temp_dir = TempDir::new().expect("Failed to create temporary directory");
-let nats_url = env::var("NATS_URL")
-            .unwrap_or_else(|_| "nats://localhost:4222".to_string());
+let url = "127.0.0.1:8091";
 
-let srv = Server::new(nats_url.to_string(), temp_dir.path().to_path_buf()).await.unwrap();
+let srv = Server::new(url.to_string(), temp_dir.path().to_path_buf())
+    .await
+    .unwrap();
 
 let put_tx = srv.put_tx();
 let get_tx = srv.get_tx();
 let del_tx = srv.del_tx();
+let sub_tx = srv.sub_tx();
+
+tokio::spawn(async move {
+    srv.serve().await;
+});
 
 let value: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
 let key = "key1".to_string();
@@ -109,6 +126,22 @@ let got = get_resp_rx.recv().await.unwrap();
 // [1, 2, 3, 4, 5] 
 print!("{:?}", got.value.unwrap());
 
+let addr: SocketAddr = url.parse().expect("Unable to parse addr");
+let stream = TcpStream::connect(&url).await.unwrap();
+let (_, write) = tokio::io::split(stream);
+let writer = BufWriter::new(write);
+
+let _ = sub_tx.send(SubMsg {
+    key: key.clone(),
+    resp_tx: resp_tx.clone(),
+    addr,
+    writer,
+});
+let message = resp_rx.recv().await.unwrap();
+
+// nkv::NotifyKeyValueError::NoError
+print!("{:?}", message);
+
 let _ = del_tx.send(BaseMsg{key: key.clone(), resp_tx: resp_tx.clone()});
 let got = resp_rx.recv().await.unwrap();
 // nkv::NotifyKeyValueError::NoError
@@ -121,25 +154,33 @@ print!("{:?}", got);
 `PersistValue` is an object, which stores your state (some variable) on file system, so that
 you can restart your application without worrying about data loss. `Notifier` on the other hand
 handles the channel between server and client to notify latter if anybody changed value. This 
-channel is a OS-primitive (currently NATS, which is using sockets under the hood) so you can 
-write clients in any programming language you want. Last two components are `Server` and `Client`.
+channel is a OS-primitive (sockets) so you can 
+write clients in any programming language you want. Last two components are `Server` and `NkvClient`.
 Former creates `NotifyKeyValue` object and manages its access from asynchronous requests. It does 
-so by exposing endpoints through some of the OS-primitive (currently NATS), so again, clients could
+so by exposing endpoints through some of the OS-primitive (socket), so again, clients could
 be in any programming language you like; Latter is used to connect to `Server` and implement the API
 (see what is it for section)
 
 You can call those components interfaces, and implement them differently to tailor to your particular 
 case, i.e. use mysql for persist value or unix domain socket for `Notfifier` and TCP for `Server` 
 
+From the flow diagram you can see how `NotifyKeyValue` processes requests.
+
+![nkv flow diagram](./imgs/nkv_flow.drawio.png)
+
+`NkvClient` sends requests to `Server` through a connection and `Server` interacts with `NotifyKeyValue`
+struct via Rust channels and `NotifyKeyValue` struct (or `Nkv`) interacts then with `PersistValue` to store
+value on a file system and `Notifier` which sends to `Subscribers` updates whenever value is changed and
+send Close message whenever value is deleted.
+The way `Server` is handling *subscribe* is different from other API calls: TCP connection is not closed,
+but rather kept open to send messages to `Subscriber`. So `NkvClient` when called `subscribe()` creates a 
+`Subscriber` struct and stores it, which in turns in its own thread listens to messages comming from `Nkv`
+via `Notifier` and newest value would be sent to `tokio::watch` channel.
+
 ### Can I use any other language than Rust?
 
 Yes, underlying design principle is that nkv is using OS primitives, making it possible to write clients in any language.
-Just write marshalling and demarshalling in JSON and be sure that you can connect to `Server` and handle `Notifier` (currently NATS)
-
-### Why there's no unsubscribe endpoint?
-Current implementation is using NATS as backend, which doesn't require client to explicitly unsubscribe
-
-### Why do you use NATS in `Server` and `Notifier`
+Just write marshalling and demarshalling in JSON and be sure that you can connect to `Server` and handle `Notifier`
 
 ### Background
 
