@@ -1,7 +1,7 @@
 use std::env;
 use tempfile::TempDir;
 
-mod srv;
+use nkv::srv;
 
 const DEFAULT_URL: &str = "127.0.0.1:8091";
 

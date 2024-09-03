@@ -15,6 +15,9 @@ tempfile = "3.10.1"
 tokio = { version = "1.39.1", features = ["full"] }
 uuid = { version = "1.4", features = ["v4"] }
 
+[dev-dependencies]
+criterion = { version = "0.4", features = ["async_tokio", "html_reports"] }
+
 [lib]
 name = "nkv"
 path = "src/lib.rs"
@@ -26,6 +29,10 @@ path = "src/server/main.rs"
 [[bin]]
 name = "nkv-client"
 path = "src/client/main.rs"
+
+[[bench]]
+name = "nkv_bench"
+harness = false
 
 [profile.release]
 strip = true  # Automatically strip symbols from the binary

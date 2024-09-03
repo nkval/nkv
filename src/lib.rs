@@ -8,6 +8,7 @@ pub mod nkv;
 pub mod notifier;
 mod persist_value;
 pub mod request_msg;
+pub mod srv;
 
 use crate::notifier::{Message, Subscriber};
 use crate::request_msg::*;

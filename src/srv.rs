@@ -9,17 +9,17 @@ use http::StatusCode;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 
-use ::nkv::nkv;
-use ::nkv::notifier::WriteStream;
-use ::nkv::request_msg::{self, BaseMessage, PutMessage, ServerRequest, ServerResponse};
+use crate::nkv;
+use crate::notifier::WriteStream;
+use crate::request_msg::{self, BaseMessage, PutMessage, ServerRequest, ServerResponse};
 
 pub struct PutMsg {
-    key: String,
-    value: Box<[u8]>,
-    resp_tx: mpsc::Sender<nkv::NotifyKeyValueError>,
+    pub key: String,
+    pub value: Box<[u8]>,
+    pub resp_tx: mpsc::Sender<nkv::NotifyKeyValueError>,
 }
 
 pub struct NkvGetResp {
@@ -28,13 +28,13 @@ pub struct NkvGetResp {
 }
 
 pub struct GetMsg {
-    key: String,
-    resp_tx: mpsc::Sender<NkvGetResp>,
+    pub key: String,
+    pub resp_tx: mpsc::Sender<NkvGetResp>,
 }
 
 pub struct BaseMsg {
-    key: String,
-    resp_tx: mpsc::Sender<nkv::NotifyKeyValueError>,
+    pub key: String,
+    pub resp_tx: mpsc::Sender<nkv::NotifyKeyValueError>,
 }
 
 pub struct SubMsg {
@@ -321,10 +321,10 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::nkv::notifier::Message;
-    use ::nkv::NkvClient;
+    use crate::notifier::Message;
+    use crate::NkvClient;
     use tempfile::TempDir;
-    use tokio;
+    use tokio::{self, net::TcpStream};
 
     #[tokio::test]
     async fn test_server() {
