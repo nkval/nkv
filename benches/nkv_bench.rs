@@ -125,9 +125,10 @@ fn bench_server(c: &mut Criterion) {
                     // not used with channels
                     let url = "127.0.0.1:8091";
 
-                    let srv = Server::new(url.to_string(), temp_dir.path().to_path_buf())
-                        .await
-                        .unwrap();
+                    let (srv, _cancel) =
+                        Server::new(url.to_string(), temp_dir.path().to_path_buf())
+                            .await
+                            .unwrap();
 
                     let put_tx = srv.put_tx();
 
@@ -160,9 +161,10 @@ fn bench_server(c: &mut Criterion) {
                     // not used with channels
                     let url = "127.0.0.1:8091";
 
-                    let srv = Server::new(url.to_string(), temp_dir.path().to_path_buf())
-                        .await
-                        .unwrap();
+                    let (srv, _cancel) =
+                        Server::new(url.to_string(), temp_dir.path().to_path_buf())
+                            .await
+                            .unwrap();
 
                     let put_tx = srv.put_tx();
                     let get_tx = srv.get_tx();
@@ -202,9 +204,10 @@ fn bench_server(c: &mut Criterion) {
                     // not used with channels
                     let url = "127.0.0.1:8091";
 
-                    let srv = Server::new(url.to_string(), temp_dir.path().to_path_buf())
-                        .await
-                        .unwrap();
+                    let (srv, _cancel) =
+                        Server::new(url.to_string(), temp_dir.path().to_path_buf())
+                            .await
+                            .unwrap();
 
                     let put_tx = srv.put_tx();
                     let del_tx = srv.del_tx();

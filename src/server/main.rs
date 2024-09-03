@@ -18,7 +18,7 @@ async fn main() {
     let temp_dir = TempDir::new().expect("Failed to create temporary directory");
 
     // creates a task where it waits to serve threads
-    let srv = srv::Server::new(url.to_string(), temp_dir.path().to_path_buf())
+    let (mut srv, _cancel) = srv::Server::new(url.to_string(), temp_dir.path().to_path_buf())
         .await
         .unwrap();
 
