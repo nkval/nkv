@@ -5,7 +5,7 @@ use tempfile::TempDir;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
-pub fn bench_nkv(c: &mut Criterion) {
+fn bench_nkv(c: &mut Criterion) {
     let mut group = c.benchmark_group("nkv_group");
 
     // Create a Tokio runtime
