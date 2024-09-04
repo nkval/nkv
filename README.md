@@ -9,6 +9,8 @@ it provides you with following API:
 - delete the state for the given key
 - subscribe to the updates for the given key
 
+Note that nkv supports keyspace, more info you can find [here](./docs/KEYSPACE.md)
+
 ### When should I use it?
 When you have some shared state between services/processes and you also want to be notified when the value is changed
 
