@@ -48,7 +48,7 @@ impl PartialEq for BaseResp {
 pub struct DataResp {
     #[serde(flatten)]
     pub base: BaseResp,
-    pub data: Vec<u8>,
+    pub data: Vec<Vec<u8>>,
 }
 
 impl PartialEq for DataResp {

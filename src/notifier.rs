@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::{sleep, Duration};
 
 #[derive(Debug)]
@@ -68,14 +68,86 @@ pub enum Message {
 
 pub type WriteStream = BufWriter<tokio::io::WriteHalf<tokio::net::TcpStream>>;
 
+#[derive(Debug)]
+struct StateBuf<T> {
+    buf: [Option<T>; 2],
+    idx: usize,
+}
+
+impl<T> StateBuf<T> {
+    pub fn new() -> Self {
+        Self {
+            buf: [None, None],
+            idx: 0,
+        }
+    }
+    pub fn store(&mut self, el: T) {
+        self.buf[self.idx] = Some(el)
+    }
+    pub fn pop(&mut self) -> Option<T> {
+        let el = self.buf[self.idx].take();
+        if self.idx == 0 {
+            self.idx = 1;
+        } else {
+            self.idx = 0;
+        }
+        el
+    }
+}
+
+#[derive(Debug)]
 pub struct Notifier {
     clients: Arc<Mutex<HashMap<SocketAddr, WriteStream>>>,
+    msg_buf: Arc<Mutex<StateBuf<Message>>>,
+    notifier: watch::Sender<bool>,
 }
 
 impl Notifier {
     pub fn new() -> Self {
-        Self {
-            clients: Arc::new(Mutex::new(HashMap::new())),
+        // use a buffer to guarantee latest state on consumers
+        // for detailed information see DESIGN_DECISIONS.md
+        // let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
+
+        let clients = Arc::new(Mutex::new(HashMap::new()));
+        let msg_buf = Arc::new(Mutex::new(StateBuf::new()));
+        let (tx, mut rx) = watch::channel(false);
+
+        let res = Self {
+            clients: Arc::clone(&clients),
+            msg_buf: Arc::clone(&msg_buf),
+            notifier: tx,
+        };
+
+        tokio::spawn(async move {
+            let clients = Arc::clone(&clients);
+            let msg_buf = Arc::clone(&msg_buf);
+            loop {
+                tokio::select! {
+                    _ = rx.changed() => {
+                        Self::send_notifications(Arc::clone(&clients), Arc::clone(&msg_buf)).await;
+                    }
+
+                    else => { return; }
+                }
+            }
+        });
+
+        res
+    }
+
+    async fn send_notifications(
+        clients: Arc<Mutex<HashMap<SocketAddr, WriteStream>>>,
+        msg_buf: Arc<Mutex<StateBuf<Message>>>,
+    ) {
+        let buf_val = {
+            let mut buf = msg_buf.lock().await;
+            buf.pop()
+        };
+
+        if let Some(val) = buf_val {
+            tokio::spawn(async move {
+                Self::broadcast_message(clients, &val).await;
+            });
         }
     }
 
@@ -86,6 +158,13 @@ impl Notifier {
 
     pub async fn unsubscribe(&self, addr: &SocketAddr) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
+        Self::unsubscribe_impl(&mut clients, addr).await
+    }
+
+    async fn unsubscribe_impl(
+        clients: &mut HashMap<SocketAddr, WriteStream>,
+        addr: &SocketAddr,
+    ) -> Result<(), NotifierError> {
         match clients.get_mut(&addr) {
             Some(stream) => Notifier::send_bytes(&to_vec(&Message::Close).unwrap(), stream).await?,
             None => return Err(NotifierError::SubscribtionNotFound),
@@ -114,21 +193,31 @@ impl Notifier {
         Ok(())
     }
 
-    async fn broadcast_message(&mut self, message: &Message) {
+    async fn broadcast_message(
+        clients: Arc<Mutex<HashMap<SocketAddr, WriteStream>>>,
+        message: &Message,
+    ) {
         let json_bytes = to_vec(&message).unwrap();
 
+        let keys: Vec<std::net::SocketAddr> = {
+            let client_guard = clients.lock().await;
+            client_guard.keys().cloned().collect()
+        };
+
         let mut failed_addrs = Vec::new();
-        let mut clients = self.clients.lock().await;
-        for (addr, stream) in clients.iter_mut() {
-            if let Err(e) = Notifier::send_bytes(&json_bytes, stream).await {
-                eprintln!("broadcast message: {}", e);
-                failed_addrs.push(addr.clone());
-                continue;
+        for addr in keys.iter() {
+            if let Some(stream) = clients.lock().await.get_mut(addr) {
+                if let Err(e) = Notifier::send_bytes(&json_bytes, stream).await {
+                    eprintln!("broadcast message: {}", e);
+                    failed_addrs.push(addr.clone());
+                    continue;
+                }
             }
         }
 
+        let mut clients = clients.lock().await;
         for addr in failed_addrs {
-            match self.unsubscribe(&addr).await {
+            match Self::unsubscribe_impl(&mut clients, &addr).await {
                 Ok(_) => {}
                 Err(e) => eprintln!("Failed to unsubscribe: {}", e),
             }
@@ -136,16 +225,21 @@ impl Notifier {
     }
 
     pub async fn send_hello(&mut self) {
-        self.broadcast_message(&Message::Hello).await
+        self.msg_buf.lock().await.store(Message::Hello);
+        let _ = self.notifier.send(true);
     }
 
     pub async fn send_update(&mut self, new_value: Box<[u8]>) {
-        self.broadcast_message(&Message::Update { value: new_value })
-            .await;
+        self.msg_buf
+            .lock()
+            .await
+            .store(Message::Update { value: new_value });
+        let _ = self.notifier.send(true);
     }
 
     pub async fn send_close(&mut self) {
-        self.broadcast_message(&Message::Close).await
+        self.msg_buf.lock().await.store(Message::Close);
+        let _ = self.notifier.send(true);
     }
 }
 

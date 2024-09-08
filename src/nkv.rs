@@ -6,17 +6,19 @@
 // load values from folder. Underlying structure is a HashMap
 // and designed to be access synchronously.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-
+use std::cell::RefCell;
 use std::fs;
 use std::io;
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::notifier::{Message, Notifier, NotifierError, WriteStream};
 use crate::persist_value::PersistValue;
+use crate::trie::{Trie, TrieNode};
 use std::fmt;
 use std::net::SocketAddr;
+use tokio::sync::Mutex;
 
 #[derive(Debug)]
 pub enum NotifyKeyValueError {
@@ -71,20 +73,21 @@ impl std::error::Error for NotifyKeyValueError {
     }
 }
 
+#[derive(Debug)]
 struct Value {
     pv: PersistValue,
-    notifier: Notifier,
+    notifier: Arc<Mutex<Notifier>>,
 }
 
 pub struct NotifyKeyValue {
-    state: HashMap<String, Value>,
+    state: Trie<Value>,
     persist_path: PathBuf,
 }
 
 impl NotifyKeyValue {
     pub fn new(path: std::path::PathBuf) -> std::io::Result<Self> {
         let mut res = Self {
-            state: HashMap::new(),
+            state: Trie::new(),
             persist_path: path,
         };
 
@@ -104,10 +107,9 @@ impl NotifyKeyValue {
                     Some(fp) => {
                         let key = fp.to_str().unwrap();
                         let val = PersistValue::from_checkpoint(&path)?;
-                        let notifier = Notifier::new();
+                        let notifier = Arc::new(Mutex::new(Notifier::new()));
 
-                        res.state
-                            .insert(key.to_string(), Value { pv: val, notifier });
+                        res.state.insert(key, Value { pv: val, notifier });
                     }
                     None => {
                         return Err(io::Error::new(
@@ -128,30 +130,63 @@ impl NotifyKeyValue {
     }
 
     pub async fn put(&mut self, key: &str, value: Box<[u8]>) {
-        if let Some(val) = self.state.get_mut(key) {
+        let vector: Arc<Mutex<Vec<Arc<Mutex<Notifier>>>>> = Arc::new(Mutex::new(Vec::new()));
+
+        // Define the capture_and_push closure
+        let capture_and_push: Option<Box<dyn Fn(&mut TrieNode<Value>) + Send + Sync + 'static>> =
+            Some({
+                let vector_clone = Arc::clone(&vector); // Clone the Arc to capture it by value
+
+                Box::new(move |trie_ref: &mut TrieNode<Value>| {
+                    let vector_clone = Arc::clone(&vector_clone);
+
+                    // Directly use the notifier arc
+                    if let Some(notifier_arc) = trie_ref
+                        .value
+                        .as_ref()
+                        .map(|value| Arc::clone(&value.notifier))
+                    {
+                        // Since tokio::spawn requires async move
+                        tokio::spawn(async move {
+                            // Lock the notifier to access it
+                            let _notifier = notifier_arc.lock().await; // Lock the mutex
+
+                            // Clone the Arc before pushing it into the vector
+                            let mut vector_lock = vector_clone.lock().await;
+                            vector_lock.push(notifier_arc.clone()); // Clone the Arc before pushing
+                            println!("Captured notifier");
+                        });
+                    } else {
+                        println!("No value in Trie");
+                    }
+                })
+            });
+
+        if let Some(val) = self.state.get_mut(key, capture_and_push) {
             // TODO: Maybe we can use reference?
             // so that we don't have to clone
             let _ = val.pv.update(value.clone());
-            let _ = val.notifier.send_update(value).await;
+            let _ = val.notifier.lock().await.send_update(value).await;
         } else {
             let path = self.persist_path.join(key);
             let val = PersistValue::new(value, path).expect("TOREMOVE");
-            let notifier = Notifier::new();
+            let notifier = Arc::new(Mutex::new(Notifier::new()));
 
-            self.state
-                .insert(key.to_string(), Value { pv: val, notifier });
+            self.state.insert(key, Value { pv: val, notifier });
         }
     }
 
-    pub fn get(&self, key: &str) -> Option<Arc<[u8]>> {
+    pub fn get(&self, key: &str) -> Vec<Arc<[u8]>> {
         self.state
             .get(key)
-            .map(|value| Arc::clone(&value.pv.data()))
+            .iter()
+            .map(|s| Arc::clone(&s.pv.data()))
+            .collect()
     }
 
     pub async fn delete(&mut self, key: &str) -> Result<(), NotifyKeyValueError> {
-        if let Some(val) = self.state.get_mut(key) {
-            val.notifier.unsubscribe_all().await?;
+        if let Some(val) = self.state.get_mut(key, None) {
+            val.notifier.lock().await.unsubscribe_all().await?;
             val.pv.delete_checkpoint()?;
         }
         self.state.remove(key);
@@ -164,8 +199,8 @@ impl NotifyKeyValue {
         addr: SocketAddr,
         mut stream: WriteStream,
     ) -> Result<(), NotifierError> {
-        if let Some(val) = self.state.get_mut(key) {
-            val.notifier.subscribe(addr, stream).await;
+        if let Some(val) = self.state.get_mut(key, None) {
+            val.notifier.lock().await.subscribe(addr, stream).await;
             Ok(())
         } else {
             // Send to client message that key was not found
@@ -176,8 +211,8 @@ impl NotifyKeyValue {
     }
 
     pub async fn unsubscribe(&mut self, key: &str, addr: &SocketAddr) {
-        if let Some(val) = self.state.get_mut(key) {
-            match val.notifier.unsubscribe(addr).await {
+        if let Some(val) = self.state.get_mut(key, None) {
+            match val.notifier.lock().await.unsubscribe(addr).await {
                 Ok(_) => (),
                 Err(e) => eprintln!("Failed to unsubscribe {}", e),
             }
@@ -201,7 +236,7 @@ mod tests {
         nkv.put("key1", data.clone()).await;
 
         let result = nkv.get("key1");
-        assert_eq!(result, Some(Arc::from(data)));
+        assert_eq!(result, vec!(Arc::from(data)));
 
         Ok(())
     }
@@ -212,7 +247,7 @@ mod tests {
         let nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf())?;
 
         let result = nkv.get("nonexistent_key");
-        assert_eq!(result, None);
+        assert_eq!(result, Vec::new());
 
         Ok(())
     }
@@ -227,7 +262,7 @@ mod tests {
 
         nkv.delete("key1").await?;
         let result = nkv.get("key1");
-        assert_eq!(result, None);
+        assert_eq!(result, Vec::new());
 
         Ok(())
     }
@@ -244,7 +279,7 @@ mod tests {
         nkv.put("key1", new_data.clone()).await;
 
         let result = nkv.get("key1");
-        assert_eq!(result, Some(Arc::from(new_data)));
+        assert_eq!(result, vec!(Arc::from(new_data)));
 
         Ok(())
     }
@@ -266,13 +301,13 @@ mod tests {
 
         let nkv = NotifyKeyValue::new(temp_dir.path().to_path_buf())?;
         let result = nkv.get("key1");
-        assert_eq!(result, Some(Arc::from(data1)));
+        assert_eq!(result, vec!(Arc::from(data1)));
 
         let result = nkv.get("key2");
-        assert_eq!(result, Some(Arc::from(data2)));
+        assert_eq!(result, vec!(Arc::from(data2)));
 
         let result = nkv.get("key3");
-        assert_eq!(result, Some(Arc::from(data3)));
+        assert_eq!(result, vec!(Arc::from(data3)));
 
         Ok(())
     }

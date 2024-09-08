@@ -24,7 +24,7 @@ pub struct PutMsg {
 
 pub struct NkvGetResp {
     err: nkv::NotifyKeyValueError,
-    value: Option<Arc<[u8]>>,
+    value: Vec<Arc<[u8]>>,
 }
 
 pub struct GetMsg {
@@ -88,16 +88,18 @@ impl Server {
                         let _ = req.resp_tx.send(nkv::NotifyKeyValueError::NoError).await;
                     }
                     Some(req) = get_rx.recv() => {
-                        let _ = match nkv.get(&req.key) {
-                            Some(resp) => req.resp_tx.send(NkvGetResp {
-                                value: Some(resp),
+                        let vals = nkv.get(&req.key);
+                        if vals.len() > 0 {
+                            req.resp_tx.send(NkvGetResp {
+                                value: vals,
                                 err: nkv::NotifyKeyValueError::NoError
-                            }).await,
-                            None => req.resp_tx.send(NkvGetResp {
-                                value: None,
+                            }).await;
+                        } else {
+                            req.resp_tx.send(NkvGetResp {
+                                value: Vec::new(),
                                 err: nkv::NotifyKeyValueError::NotFound
-                            }).await
-                        };
+                            }).await;
+                        }
                    }
                    Some(req) = del_rx.recv() => {
                        let err = match nkv.delete(&req.key).await {
@@ -241,10 +243,11 @@ impl Server {
                     resp_tx: get_resp_tx,
                 });
                 let nkv_resp = get_resp_rx.recv().await.unwrap();
-                let mut data: Vec<u8> = Vec::new();
-                if let Some(v) = nkv_resp.value {
-                    data = v.to_vec();
-                }
+                let data: Vec<Vec<u8>> = nkv_resp
+                    .value
+                    .into_iter()
+                    .map(|arc| arc.as_ref().to_vec())
+                    .collect();
                 let resp = request_msg::DataResp {
                     base: request_msg::BaseResp {
                         id,
@@ -381,7 +384,8 @@ mod tests {
         });
         let got = get_resp_rx.recv().await.unwrap();
         assert!(matches!(got.err, nkv::NotifyKeyValueError::NoError));
-        assert_eq!(got.value.unwrap(), value.into());
+
+        assert_eq!(got.value, vec!(Arc::from(value)));
 
         // create sub
         let addr: SocketAddr = url.parse().expect("Unable to parse addr");
@@ -452,7 +456,7 @@ mod tests {
                     status: http::StatusCode::OK,
                     message: "No Error".to_string(),
                 },
-                data: value.to_vec(),
+                data: vec!(value.to_vec()),
             })
         );
 

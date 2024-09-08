@@ -4,6 +4,12 @@ Notify Key Value provides in-built keyspace functionality with `.` symbol as sep
 What does that mean? Well, values are stored hierarchically and each level of hierarchy is separated by `.`
 And if you want to get all the values stored under certain hierarchy level you can use wildcard, i.e.
 
+#### Restrictions
+
+- keyspace does not work for `put` command
+
+#### Code example
+
 ```rust
 let url = "localhost:4222".to_string();
 let mut client = NkvClient::new(&url);
