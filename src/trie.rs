@@ -2,6 +2,8 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 
 #[derive(Debug)]
 pub enum TrieError {
@@ -92,7 +94,14 @@ impl<T> Trie<T> {
     pub fn get_mut(
         &mut self,
         key: &str,
-        op: Option<Box<dyn Fn(&mut TrieNode<T>) + Send + Sync + 'static>>,
+        op: Option<
+            Box<
+                dyn Fn(&mut TrieNode<T>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                    + Send
+                    + Sync
+                    + 'static,
+            >,
+        >,
     ) -> Option<&mut T> {
         let parts: Vec<&str> = key.split('.').collect();
         let mut node = &mut self.root;

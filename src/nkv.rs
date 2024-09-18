@@ -6,11 +6,11 @@
 // load values from folder. Underlying structure is a HashMap
 // and designed to be access synchronously.
 
-use std::cell::RefCell;
 use std::fs;
+use std::future::Future;
 use std::io;
 use std::path::PathBuf;
-use std::rc::Rc;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::notifier::{Message, Notifier, NotifierError, WriteStream};
@@ -132,32 +132,37 @@ impl NotifyKeyValue {
     pub async fn put(&mut self, key: &str, value: Box<[u8]>) {
         let vector: Arc<Mutex<Vec<Arc<Mutex<Notifier>>>>> = Arc::new(Mutex::new(Vec::new()));
 
-        // Define the capture_and_push closure
-        let capture_and_push: Option<Box<dyn Fn(&mut TrieNode<Value>) + Send + Sync + 'static>> =
-            Some({
-                let vector_clone = Arc::clone(&vector); // Clone the Arc to capture it by value
+        let capture_and_push: Option<
+            Box<
+                dyn Fn(&mut TrieNode<Value>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                    + Send
+                    + Sync
+                    + 'static,
+            >,
+        > = Some({
+            Box::new(
+                move |trie_ref: &mut TrieNode<Value>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                    // Extract the notifier Arc from the TrieNode
+                    let notifier_arc = match trie_ref.value.as_ref() {
+                        Some(value) => Arc::clone(&value.notifier),
+                        None => return Box::pin(async {}), // Early return if no value in trie_ref
+                    };
 
-                Box::new(move |trie_ref: &mut TrieNode<Value>| {
-                    let vector_clone = Arc::clone(&vector_clone);
+                    let vector_clone = Arc::clone(&vector);
 
-                    // Directly use the notifier arc
-                    if let Some(notifier_arc) = trie_ref
-                        .value
-                        .as_ref()
-                        .map(|value| Arc::clone(&value.notifier))
-                    {
-                        // Since tokio::spawn requires async move
-                        tokio::spawn(async move {
-                            // Lock the notifier to access it
-                            let _notifier = notifier_arc.lock().await; // Lock the mutex
+                    Box::pin(async move {
+                        // Lock notifier's tokio mutex only for the critical section
+                        {
+                            let _notifier = notifier_arc.lock().await; // Lock the notifier's tokio mutex
+                        } // Mutex lock scope ends here
 
-                            // Clone the Arc before pushing it into the vector
-                            let mut vector_lock = vector_clone.lock().await;
-                            vector_lock.push(notifier_arc.clone()); // Clone the Arc before pushing
-                        });
-                    }
-                })
-            });
+                        // Lock the vector's tokio mutex and push the notifier arc
+                        let mut vector_lock = vector_clone.lock().await;
+                        vector_lock.push(notifier_arc); // No need to clone, push directly
+                    })
+                },
+            )
+        });
 
         if let Some(val) = self.state.get_mut(key, capture_and_push) {
             // TODO: Maybe we can use reference?
