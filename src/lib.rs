@@ -9,7 +9,7 @@ pub mod notifier;
 mod persist_value;
 pub mod request_msg;
 pub mod srv;
-mod trie;
+pub mod trie;
 
 use crate::notifier::{Message, Subscriber};
 use crate::request_msg::*;
