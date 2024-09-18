@@ -154,10 +154,7 @@ impl NotifyKeyValue {
                             // Clone the Arc before pushing it into the vector
                             let mut vector_lock = vector_clone.lock().await;
                             vector_lock.push(notifier_arc.clone()); // Clone the Arc before pushing
-                            println!("Captured notifier");
                         });
-                    } else {
-                        println!("No value in Trie");
                     }
                 })
             });
