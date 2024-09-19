@@ -91,7 +91,7 @@ impl<T> Trie<T> {
         self.collect_values(node)
     }
 
-    pub fn get_mut(
+    pub async fn get_mut(
         &mut self,
         key: &str,
         op: Option<
@@ -108,7 +108,7 @@ impl<T> Trie<T> {
 
         for part in parts {
             if let Some(ref f) = op {
-                f(node);
+                f(node).await;
             }
             match node.children.get_mut(part) {
                 Some(child) => node = child,

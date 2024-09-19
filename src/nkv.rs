@@ -164,7 +164,7 @@ impl NotifyKeyValue {
             )
         });
 
-        if let Some(val) = self.state.get_mut(key, capture_and_push) {
+        if let Some(val) = self.state.get_mut(key, capture_and_push).await {
             // TODO: Maybe we can use reference?
             // so that we don't have to clone
             let _ = val.pv.update(value.clone());
@@ -187,7 +187,7 @@ impl NotifyKeyValue {
     }
 
     pub async fn delete(&mut self, key: &str) -> Result<(), NotifyKeyValueError> {
-        if let Some(val) = self.state.get_mut(key, None) {
+        if let Some(val) = self.state.get_mut(key, None).await {
             val.notifier.lock().await.unsubscribe_all().await?;
             val.pv.delete_checkpoint()?;
         }
@@ -201,7 +201,7 @@ impl NotifyKeyValue {
         addr: SocketAddr,
         mut stream: WriteStream,
     ) -> Result<(), NotifierError> {
-        if let Some(val) = self.state.get_mut(key, None) {
+        if let Some(val) = self.state.get_mut(key, None).await {
             val.notifier.lock().await.subscribe(addr, stream).await;
             Ok(())
         } else {
@@ -213,7 +213,7 @@ impl NotifyKeyValue {
     }
 
     pub async fn unsubscribe(&mut self, key: &str, addr: &SocketAddr) {
-        if let Some(val) = self.state.get_mut(key, None) {
+        if let Some(val) = self.state.get_mut(key, None).await {
             match val.notifier.lock().await.unsubscribe(addr).await {
                 Ok(_) => (),
                 Err(e) => eprintln!("Failed to unsubscribe {}", e),
