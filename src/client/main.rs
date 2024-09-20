@@ -3,6 +3,7 @@ use std::io::{self, Write};
 
 use nkv::notifier::Message;
 use nkv::NkvClient;
+use std::time::Instant;
 
 const DEFAULT_URL: &str = "127.0.0.1:4222";
 
@@ -44,38 +45,45 @@ async fn main() {
                 "PUT" => {
                     if let (Some(_key), Some(_value)) = (parts.get(1), parts.get(2)) {
                         let byte_slice: &[u8] = _value.as_bytes();
-
-                        // Convert the byte slice into a boxed slice
                         let boxed_bytes: Box<[u8]> = byte_slice.into();
+
+                        let start = Instant::now();
                         let resp = client.put(_key.to_string(), boxed_bytes).await.unwrap();
-                        println!("{}", resp);
+                        let elapsed = start.elapsed();
+                        println!("Request took: {:.2?}\n{}", elapsed, resp);
                     } else {
                         println!("PUT requires a key and a value");
                     }
                 }
                 "GET" => {
                     if let Some(_key) = parts.get(1) {
+                        let start = Instant::now();
                         let resp = client.get(_key.to_string()).await.unwrap();
-                        println!("{}", resp);
+                        let elapsed = start.elapsed();
+                        println!("Request took: {:.2?}\n{}", elapsed, resp);
                     } else {
                         println!("GET requires a key");
                     }
                 }
                 "DELETE" => {
                     if let Some(_key) = parts.get(1) {
+                        let start = Instant::now();
                         let resp = client.delete(_key.to_string()).await.unwrap();
-                        println!("{}", resp);
+                        let elapsed = start.elapsed();
+                        println!("Request took: {:.2?}\n{}", elapsed, resp);
                     } else {
                         println!("DELETE requires a key");
                     }
                 }
                 "SUBSCRIBE" => {
                     if let Some(_key) = parts.get(1) {
+                        let start = Instant::now();
                         let resp = client
                             .subscribe(_key.to_string(), print_update.clone())
                             .await
                             .unwrap();
-                        println!("{}", resp);
+                        let elapsed = start.elapsed();
+                        println!("Request took: {:.2?}\n{}", elapsed, resp);
                     } else {
                         println!("SUBSCRIBE requires a key");
                     }
@@ -89,6 +97,7 @@ async fn main() {
                     println!("GET key");
                     println!("DELETE key");
                     println!("HELP");
+                    println!("SUBSCRIBE key");
                     println!("QUIT");
                 }
                 &_ => {
