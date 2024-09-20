@@ -5,6 +5,7 @@
 
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BaseMessage {
@@ -37,6 +38,16 @@ pub struct BaseResp {
     pub message: String,
 }
 
+impl fmt::Display for BaseResp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "Id: {}\nStatus: {}\nMessage: {}",
+            self.id, self.status, self.message
+        )
+    }
+}
+
 impl PartialEq for BaseResp {
     fn eq(&self, other: &Self) -> bool {
         // Ignoring id intentionally
@@ -49,6 +60,21 @@ pub struct DataResp {
     #[serde(flatten)]
     pub base: BaseResp,
     pub data: Vec<Vec<u8>>,
+}
+
+impl fmt::Display for DataResp {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}\n", self.base)?;
+        write!(f, "Data:\n")?;
+
+        for el in self.data.iter() {
+            match String::from_utf8(el.clone()) {
+                Ok(string) => write!(f, " - {}\n", string)?,
+                Err(_) => write!(f, " - {:?}\n", el)?,
+            }
+        }
+        Ok(())
+    }
 }
 
 impl PartialEq for DataResp {
@@ -73,6 +99,17 @@ impl PartialEq for ServerResponse {
             (Self::Put(lhs), Self::Put(rhs)) => lhs == rhs,
             (Self::Sub(lhs), Self::Sub(rhs)) => lhs == rhs,
             _ => false,
+        }
+    }
+}
+
+impl fmt::Display for ServerResponse {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Base(resp) => write!(f, "{}", resp),
+            Self::Get(resp) => write!(f, "{}", resp),
+            Self::Put(resp) => write!(f, "{}", resp),
+            Self::Sub(resp) => write!(f, "{}", resp),
         }
     }
 }
