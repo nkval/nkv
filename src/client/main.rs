@@ -1,12 +1,11 @@
 use std::env;
 use std::io::{self, Write};
 
-use nkv::request_msg;
 use nkv::NkvClient;
 
-const DEFAULT_URL: &str = "localhost:4222";
+const DEFAULT_URL: &str = "127.0.0.1:4222";
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -17,11 +16,11 @@ async fn main() {
     };
     let mut client = NkvClient::new(&url);
 
+    println!("Please enter the command words separated by whitespace, finish with a character return. Enter HELP for help:");
     loop {
         let mut input = String::new();
 
         // Prompt the user for input
-        println!("Please enter the command words separated by whitespace, finish with a character return. Enter HELP for help:");
         io::stdout().flush().unwrap(); // Ensure the prompt is shown immediately
 
         // Read the input from the user
@@ -44,14 +43,7 @@ async fn main() {
                         // Convert the byte slice into a boxed slice
                         let boxed_bytes: Box<[u8]> = byte_slice.into();
                         let resp = client.put(_key.to_string(), boxed_bytes).await.unwrap();
-                        assert_eq!(
-                            resp,
-                            request_msg::ServerResponse::Base(request_msg::BaseResp {
-                                id: "0".to_string(),
-                                status: http::StatusCode::OK,
-                                message: "No Error".to_string(),
-                            })
-                        )
+                        println!("{}", resp);
                     } else {
                         println!("PUT requires a key and a value");
                     }
@@ -59,14 +51,7 @@ async fn main() {
                 "GET" => {
                     if let Some(_key) = parts.get(1) {
                         let resp = client.get(_key.to_string()).await.unwrap();
-                        assert_eq!(
-                            resp,
-                            request_msg::ServerResponse::Base(request_msg::BaseResp {
-                                id: "0".to_string(),
-                                status: http::StatusCode::OK,
-                                message: "No Error".to_string(),
-                            })
-                        )
+                        println!("{}", resp);
                     } else {
                         println!("GET requires a key");
                     }
@@ -74,14 +59,7 @@ async fn main() {
                 "DELETE" => {
                     if let Some(_key) = parts.get(1) {
                         let resp = client.delete(_key.to_string()).await.unwrap();
-                        assert_eq!(
-                            resp,
-                            request_msg::ServerResponse::Base(request_msg::BaseResp {
-                                id: "0".to_string(),
-                                status: http::StatusCode::OK,
-                                message: "No Error".to_string(),
-                            })
-                        )
+                        println!("{}", resp);
                     } else {
                         println!("DELETE requires a key");
                     }

@@ -3,9 +3,9 @@ use tempfile::TempDir;
 
 use nkv::srv;
 
-const DEFAULT_URL: &str = "127.0.0.1:8091";
+const DEFAULT_URL: &str = "127.0.0.1:4222";
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     let args: Vec<String> = env::args().collect();
 
