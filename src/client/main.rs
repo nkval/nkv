@@ -1,6 +1,7 @@
 use std::env;
 use std::io::{self, Write};
 
+use nkv::notifier::Message;
 use nkv::NkvClient;
 
 const DEFAULT_URL: &str = "127.0.0.1:4222";
@@ -34,6 +35,10 @@ async fn main() {
         // Split the input on whitespace
         let parts: Vec<&str> = input.split_whitespace().collect();
 
+        let print_update = Box::new(move |value: Message| {
+            println!("Recieved update: {}", value);
+        });
+
         if let Some(command) = parts.get(0) {
             match *command {
                 "PUT" => {
@@ -62,6 +67,17 @@ async fn main() {
                         println!("{}", resp);
                     } else {
                         println!("DELETE requires a key");
+                    }
+                }
+                "SUBSCRIBE" => {
+                    if let Some(_key) = parts.get(1) {
+                        let resp = client
+                            .subscribe(_key.to_string(), print_update.clone())
+                            .await
+                            .unwrap();
+                        println!("{}", resp);
+                    } else {
+                        println!("SUBSCRIBE requires a key");
                     }
                 }
                 "QUIT" => {

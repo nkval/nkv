@@ -473,8 +473,16 @@ mod tests {
             })
         );
 
+        let (tx, mut rx) = mpsc::channel(1);
+        let send_to_channel = Box::new(move |value| {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                tx.send(value).await.unwrap();
+            });
+        });
+
         let sub_resp = client
-            .subscribe("non-existent-key".to_string())
+            .subscribe("non-existent-key".to_string(), send_to_channel.clone())
             .await
             .unwrap();
         assert_eq!(
@@ -486,15 +494,18 @@ mod tests {
             })
         );
         // Give server time to subscribe
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        let result = client.latest_state("non-existent-key").await;
-        assert!(result.is_ok());
-        match result {
-            Ok(val) => assert_eq!(val, Message::NotFound),
-            _ => panic!("Expected SubscriptionError"),
+        // tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        //
+        if let Some(val) = rx.recv().await {
+            assert_eq!(val, Message::NotFound);
+        } else {
+            panic!("Expected value");
         }
 
-        let sub_resp = client.subscribe(key.clone()).await.unwrap();
+        let sub_resp = client
+            .subscribe(key.clone(), send_to_channel.clone())
+            .await
+            .unwrap();
         assert_eq!(
             sub_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
@@ -504,7 +515,7 @@ mod tests {
             })
         );
         // Give server time to subscribe
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         let new_value: Box<[u8]> = Box::new([42, 0, 1, 0, 1]);
         let resp = client.put(key.clone(), new_value.clone()).await.unwrap();
@@ -516,13 +527,11 @@ mod tests {
                 message: "No Error".to_string(),
             })
         );
-        let result = client.latest_state(&key).await;
-        assert!(result.is_ok());
-        match result {
-            Ok(Message::Update { value }) => {
-                assert_eq!(value, new_value)
-            }
-            _ => panic!("Expected no errors"),
+
+        if let Some(Message::Update { value }) = rx.recv().await {
+            assert_eq!(value, new_value);
+        } else {
+            panic!("Expected value");
         }
 
         let del_resp = client.delete(key.clone()).await.unwrap();
@@ -534,12 +543,11 @@ mod tests {
                 message: "No Error".to_string(),
             })
         );
-        let result = client.latest_state(&key).await;
-        assert!(result.is_ok());
-        match result {
-            Ok(Message::Close) => (),
-            _ => panic!("Expected close message"),
-        };
+        if let Some(val) = rx.recv().await {
+            assert_eq!(val, Message::Close);
+        } else {
+            panic!("Expected value");
+        }
 
         let del_get_resp = client.get(key.clone()).await.unwrap();
         assert_eq!(

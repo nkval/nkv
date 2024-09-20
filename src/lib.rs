@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fmt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -38,7 +38,11 @@ impl std::error::Error for NkvClientError {}
 
 pub struct NkvClient {
     addr: String,
-    subscriptions: HashMap<String, watch::Receiver<Message>>,
+    subscriptions: HashMap<String, bool>,
+}
+
+pub trait Subscription {
+    fn handle_update(self, msg: Message);
 }
 
 impl NkvClient {
@@ -80,7 +84,11 @@ impl NkvClient {
         self.send_request(&req).await
     }
 
-    pub async fn subscribe(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
+    pub async fn subscribe(
+        &mut self,
+        key: String,
+        hdlr: Box<dyn Fn(Message) + Send>,
+    ) -> tokio::io::Result<ServerResponse> {
         // we subscribe only once during client lifetime
         if self.subscriptions.contains_key(&key) {
             return Ok(ServerResponse::Base(BaseResp {
@@ -90,32 +98,31 @@ impl NkvClient {
             }));
         }
 
-        let (mut subscriber, rx) = Subscriber::new(&self.addr, &key);
+        let (mut subscriber, mut rx) = Subscriber::new(&self.addr, &key);
 
-        tokio::task::spawn(async move {
+        tokio::spawn(async move {
+            // TODO: stop when cancleed
             subscriber.start().await;
         });
 
-        self.subscriptions.insert(key, rx);
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = rx.changed() => {
+                        let val = rx.borrow().to_owned();
+                        hdlr(val);
+                    }
+                }
+            }
+        });
+
+        self.subscriptions.insert(key, true);
 
         Ok(ServerResponse::Base(BaseResp {
             id: Self::uuid(),
             status: http::StatusCode::OK,
             message: "Subscribed".to_string(),
         }))
-    }
-
-    pub async fn latest_state(&mut self, key: &str) -> Result<Message, NkvClientError> {
-        match self.subscriptions.get_mut(key) {
-            Some(val) => {
-                if val.changed().await.is_ok() {
-                    Ok(val.borrow().to_owned())
-                } else {
-                    return Err(NkvClientError::SubscriptionNotFound(key.to_string()));
-                }
-            }
-            None => Err(NkvClientError::SubscriptionNotFound(key.to_string())),
-        }
     }
 
     async fn send_request(&mut self, request: &ServerRequest) -> tokio::io::Result<ServerResponse> {

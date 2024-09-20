@@ -66,6 +66,21 @@ pub enum Message {
     NotFound,
 }
 
+impl fmt::Display for Message {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Hello => write!(f, "Hello")?,
+            Self::Update { value } => match String::from_utf8(value.to_vec()) {
+                Ok(string) => write!(f, " - {}\n", string)?,
+                Err(_) => write!(f, " - {:?}\n", value)?,
+            },
+            Self::Close => write!(f, "Close")?,
+            Self::NotFound => write!(f, "Not Found")?,
+        }
+        Ok(())
+    }
+}
+
 pub type WriteStream = BufWriter<tokio::io::WriteHalf<tokio::net::TcpStream>>;
 
 #[derive(Debug)]
