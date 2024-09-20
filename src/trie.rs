@@ -88,7 +88,11 @@ impl<T> Trie<T> {
                 None => return Vec::new(),
             }
         }
-        self.collect_values(node)
+        if Self::has_wildcard(prefix) {
+            self.collect_values(node)
+        } else {
+            node.value.as_ref().map_or(Vec::new(), |v| vec![v])
+        }
     }
 
     pub async fn get_mut(
