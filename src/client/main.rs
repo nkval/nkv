@@ -37,7 +37,7 @@ async fn main() {
         let parts: Vec<&str> = input.split_whitespace().collect();
 
         let print_update = Box::new(move |value: Message| {
-            println!("Recieved update: {}", value);
+            println!("Recieved update:\n{}", value);
         });
 
         if let Some(command) = parts.get(0) {

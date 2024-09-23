@@ -131,6 +131,7 @@ impl NotifyKeyValue {
 
     pub async fn put(&mut self, key: &str, value: Box<[u8]>) {
         let vector: Arc<Mutex<Vec<Arc<Mutex<Notifier>>>>> = Arc::new(Mutex::new(Vec::new()));
+        let vc = Arc::clone(&vector);
 
         let capture_and_push: Option<
             Box<
@@ -142,23 +143,20 @@ impl NotifyKeyValue {
         > = Some({
             Box::new(
                 move |trie_ref: &mut TrieNode<Value>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
-                    // Extract the notifier Arc from the TrieNode
                     let notifier_arc = match trie_ref.value.as_ref() {
                         Some(value) => Arc::clone(&value.notifier),
-                        None => return Box::pin(async {}), // Early return if no value in trie_ref
+                        None => return Box::pin(async {}),
                     };
 
-                    let vector_clone = Arc::clone(&vector);
+                    let vector_clone = Arc::clone(&vc);
 
                     Box::pin(async move {
-                        // Lock notifier's tokio mutex only for the critical section
                         {
-                            let _notifier = notifier_arc.lock().await; // Lock the notifier's tokio mutex
-                        } // Mutex lock scope ends here
+                            let _notifier = notifier_arc.lock().await;
+                        }
 
-                        // Lock the vector's tokio mutex and push the notifier arc
                         let mut vector_lock = vector_clone.lock().await;
-                        vector_lock.push(notifier_arc); // No need to clone, push directly
+                        vector_lock.push(notifier_arc);
                     })
                 },
             )
@@ -168,13 +166,24 @@ impl NotifyKeyValue {
             // TODO: Maybe we can use reference?
             // so that we don't have to clone
             let _ = val.pv.update(value.clone());
-            let _ = val.notifier.lock().await.send_update(value).await;
+            let _ = val
+                .notifier
+                .lock()
+                .await
+                .send_update(key.to_string(), value.clone())
+                .await;
         } else {
-            let path = self.persist_path.join(key);
-            let val = PersistValue::new(value, path).expect("TOREMOVE");
-            let notifier = Arc::new(Mutex::new(Notifier::new()));
+            let val = self.create_value(key, value.clone());
+            self.state.insert(key, val);
+        }
 
-            self.state.insert(key, Value { pv: val, notifier });
+        let vector_lock = vector.lock().await;
+        for notifier_arc in vector_lock.iter() {
+            notifier_arc
+                .lock()
+                .await
+                .send_update(key.to_string(), value.clone())
+                .await;
         }
     }
 
@@ -187,34 +196,86 @@ impl NotifyKeyValue {
     }
 
     pub async fn delete(&mut self, key: &str) -> Result<(), NotifyKeyValueError> {
-        if let Some(val) = self.state.get_mut(key, None).await {
-            val.notifier.lock().await.unsubscribe_all().await?;
+        let vector: Arc<Mutex<Vec<Arc<Mutex<Notifier>>>>> = Arc::new(Mutex::new(Vec::new()));
+        let vc = Arc::clone(&vector);
+
+        let capture_and_push: Option<
+            Box<
+                dyn Fn(&mut TrieNode<Value>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                    + Send
+                    + Sync
+                    + 'static,
+            >,
+        > = Some({
+            Box::new(
+                move |trie_ref: &mut TrieNode<Value>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                    let notifier_arc = match trie_ref.value.as_ref() {
+                        Some(value) => Arc::clone(&value.notifier),
+                        None => return Box::pin(async {}),
+                    };
+
+                    let vector_clone = Arc::clone(&vc);
+
+                    Box::pin(async move {
+                        {
+                            let _notifier = notifier_arc.lock().await;
+                        }
+
+                        let mut vector_lock = vector_clone.lock().await;
+                        vector_lock.push(notifier_arc);
+                    })
+                },
+            )
+        });
+
+        if let Some(val) = self.state.get_mut(key, capture_and_push).await {
+            {
+                let vec_lock = vector.lock().await;
+                for n_arc in vec_lock.iter() {
+                    n_arc.lock().await.send_close(key.to_string()).await;
+                }
+            }
+            val.notifier.lock().await.unsubscribe_all(key).await?;
             val.pv.delete_checkpoint()?;
         }
         self.state.remove(key);
         Ok(())
     }
 
+    fn create_value(&self, key: &str, data: Box<[u8]>) -> Value {
+        let path = self.persist_path.join(key);
+        let val = PersistValue::new(data, path).expect("TOREMOVE");
+        let notifier = Arc::new(Mutex::new(Notifier::new()));
+        Value { pv: val, notifier }
+    }
+
     pub async fn subscribe(
         &mut self,
         key: &str,
         addr: SocketAddr,
-        mut stream: WriteStream,
+        stream: WriteStream,
     ) -> Result<(), NotifierError> {
+        // println!("DEBUG: SUBSCRIBE STATE {:?}", self.state);
         if let Some(val) = self.state.get_mut(key, None).await {
             val.notifier.lock().await.subscribe(addr, stream).await;
-            Ok(())
         } else {
-            // Send to client message that key was not found
-            let msg = Message::NotFound;
-            let json_bytes = serde_json::to_vec(&msg).unwrap();
-            Notifier::send_bytes(&json_bytes, &mut stream).await
+            // Client can subscribe to a non-existent value
+            let val = self.create_value(key, Box::new([]));
+            val.notifier.lock().await.subscribe(addr, stream).await;
+            self.state.insert(key, val);
         }
+        Ok(())
     }
 
     pub async fn unsubscribe(&mut self, key: &str, addr: &SocketAddr) {
         if let Some(val) = self.state.get_mut(key, None).await {
-            match val.notifier.lock().await.unsubscribe(addr).await {
+            match val
+                .notifier
+                .lock()
+                .await
+                .unsubscribe(key.to_string(), addr)
+                .await
+            {
                 Ok(_) => (),
                 Err(e) => eprintln!("Failed to unsubscribe {}", e),
             }

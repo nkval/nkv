@@ -54,7 +54,7 @@ impl NkvClient {
     }
 
     fn uuid() -> String {
-        "rust-nkv-client".to_string() + &Uuid::new_v4().to_string()
+        "rust-nkv-client-".to_string() + &Uuid::new_v4().to_string()
     }
 
     pub async fn get(&mut self, key: String) -> tokio::io::Result<ServerResponse> {

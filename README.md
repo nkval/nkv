@@ -1,5 +1,7 @@
 # Notify Key Value Storage (nkv)
 
+![demo](./imgs/demo.gif)
+
 ### What is it for? 
 nkv lets you share state between your services using client server topology. 
 it provides you with following API:

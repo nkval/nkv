@@ -493,14 +493,6 @@ mod tests {
                 message: "Subscribed".to_string(),
             })
         );
-        // Give server time to subscribe
-        // tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        //
-        if let Some(val) = rx.recv().await {
-            assert_eq!(val, Message::NotFound);
-        } else {
-            panic!("Expected value");
-        }
 
         let sub_resp = client
             .subscribe(key.clone(), send_to_channel.clone())
@@ -528,7 +520,7 @@ mod tests {
             })
         );
 
-        if let Some(Message::Update { value }) = rx.recv().await {
+        if let Some(Message::Update { key: _, value }) = rx.recv().await {
             assert_eq!(value, new_value);
         } else {
             panic!("Expected value");
@@ -544,7 +536,7 @@ mod tests {
             })
         );
         if let Some(val) = rx.recv().await {
-            assert_eq!(val, Message::Close);
+            assert_eq!(val, Message::Close { key: key.clone() });
         } else {
             panic!("Expected value");
         }

@@ -61,8 +61,8 @@ impl std::error::Error for NotifierError {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum Message {
     Hello,
-    Update { value: Box<[u8]> },
-    Close,
+    Update { key: String, value: Box<[u8]> },
+    Close { key: String },
     NotFound,
 }
 
@@ -70,11 +70,11 @@ impl fmt::Display for Message {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Hello => write!(f, "Hello")?,
-            Self::Update { value } => match String::from_utf8(value.to_vec()) {
-                Ok(string) => write!(f, " - {}\n", string)?,
-                Err(_) => write!(f, " - {:?}\n", value)?,
+            Self::Update { key, value } => match String::from_utf8(value.to_vec()) {
+                Ok(string) => write!(f, " - {} : {}\n", key, string)?,
+                Err(_) => write!(f, " - {} : {:?}\n", key, value)?,
             },
-            Self::Close => write!(f, "Close")?,
+            Self::Close { key } => write!(f, "{}: Close", key)?,
             Self::NotFound => write!(f, "Not Found")?,
         }
         Ok(())
@@ -171,28 +171,38 @@ impl Notifier {
         subscribers.insert(addr, stream);
     }
 
-    pub async fn unsubscribe(&self, addr: &SocketAddr) -> Result<(), NotifierError> {
+    pub async fn unsubscribe(&self, key: String, addr: &SocketAddr) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
-        Self::unsubscribe_impl(&mut clients, addr).await
+        Self::unsubscribe_impl(key, &mut clients, addr).await
     }
 
     async fn unsubscribe_impl(
+        key: String,
         clients: &mut HashMap<SocketAddr, WriteStream>,
         addr: &SocketAddr,
     ) -> Result<(), NotifierError> {
         match clients.get_mut(&addr) {
-            Some(stream) => Notifier::send_bytes(&to_vec(&Message::Close).unwrap(), stream).await?,
+            Some(stream) => {
+                Notifier::send_bytes(&to_vec(&Message::Close { key }).unwrap(), stream).await?
+            }
             None => return Err(NotifierError::SubscribtionNotFound),
         }
         clients.remove(addr);
         Ok(())
     }
 
-    pub async fn unsubscribe_all(&self) -> Result<(), NotifierError> {
+    pub async fn unsubscribe_all(&self, key: &str) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
 
         for (_, mut stream) in clients.drain() {
-            Notifier::send_bytes(&to_vec(&Message::Close).unwrap(), &mut stream).await?;
+            Notifier::send_bytes(
+                &to_vec(&Message::Close {
+                    key: key.to_string(),
+                })
+                .unwrap(),
+                &mut stream,
+            )
+            .await?;
         }
 
         Ok(())
@@ -232,7 +242,7 @@ impl Notifier {
 
         let mut clients = clients.lock().await;
         for addr in failed_addrs {
-            match Self::unsubscribe_impl(&mut clients, &addr).await {
+            match Self::unsubscribe_impl("failed addr".to_string(), &mut clients, &addr).await {
                 Ok(_) => {}
                 Err(e) => eprintln!("Failed to unsubscribe: {}", e),
             }
@@ -244,16 +254,16 @@ impl Notifier {
         let _ = self.notifier.send(true);
     }
 
-    pub async fn send_update(&mut self, new_value: Box<[u8]>) {
-        self.msg_buf
-            .lock()
-            .await
-            .store(Message::Update { value: new_value });
+    pub async fn send_update(&mut self, key: String, new_value: Box<[u8]>) {
+        self.msg_buf.lock().await.store(Message::Update {
+            key,
+            value: new_value,
+        });
         let _ = self.notifier.send(true);
     }
 
-    pub async fn send_close(&mut self) {
-        self.msg_buf.lock().await.store(Message::Close);
+    pub async fn send_close(&mut self, key: String) {
+        self.msg_buf.lock().await.store(Message::Close { key });
         let _ = self.notifier.send(true);
     }
 }
@@ -357,7 +367,9 @@ mod tests {
             let _ = reader.read_line(&mut buffer).await;
 
             notifier.subscribe(addr, writer).await;
-            notifier.send_update(vc.clone()).await;
+            notifier
+                .send_update("AWESOME_KEY".to_string(), vc.clone())
+                .await;
             sleep(Duration::from_secs(1)).await;
         });
 
@@ -365,6 +377,12 @@ mod tests {
 
         assert_eq!(true, rx.changed().await.is_ok());
         let msg = rx.borrow();
-        assert_eq!(*msg, Message::Update { value: val });
+        assert_eq!(
+            *msg,
+            Message::Update {
+                key: "AWESOME_KEY".to_string(),
+                value: val
+            }
+        );
     }
 }
