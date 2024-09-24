@@ -29,5 +29,5 @@ case, i.e. use mysql for persist value or unix domain socket for `Notfifier` and
 
 From the flow diagram you can see how `NotifyKeyValue` processes requests.
 
-![nkv flow diagram](./imgs/nkv_flow.drawio.png)
+![nkv flow diagram](../imgs/nkv_flow.drawio.png)
 
