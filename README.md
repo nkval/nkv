@@ -20,6 +20,23 @@ For more information reffer to [this](./docs/DESIGN_DECISIONS.md)
 When you have some shared state between services/processes and you also want to be notified when the value is changed
 
 ### How do I use it?
+In order to use it you should install Rust programming language. If you're running Linux or OSX you can do so via `rustup`
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+For Windows installation on and other methods see [here](https://forge.rust-lang.org/infra/other-installation-methods.html)
+
+Then you can simply do following
+
+```sh
+git clone git@github.com:uncleDecart/nkv.git
+cd nkv
+cargo build --release
+```
+
+And you'll see `nkv-server` and `nkv-client` binaries in `target/release` folder
 
 Start a server by running the binary `nkv-server`, passing it the hostname and port on which to listen,
 e.g. `localhost:8000`. If you pass none, it defaults to `localhost:4222`. 
