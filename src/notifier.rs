@@ -113,16 +113,14 @@ impl<T> StateBuf<T> {
 #[derive(Debug)]
 pub struct Notifier {
     clients: Arc<Mutex<HashMap<SocketAddr, WriteStream>>>,
+    // use a buffer to guarantee latest state on consumers
+    // for detailed information see DESIGN_DECISIONS.md
     msg_buf: Arc<Mutex<StateBuf<Message>>>,
     notifier: watch::Sender<bool>,
 }
 
 impl Notifier {
     pub fn new() -> Self {
-        // use a buffer to guarantee latest state on consumers
-        // for detailed information see DESIGN_DECISIONS.md
-        // let (msg_tx, mut msg_rx) = mpsc::unbounded_channel::<Message>();
-
         let clients = Arc::new(Mutex::new(HashMap::new()));
         let msg_buf = Arc::new(Mutex::new(StateBuf::new()));
         let (tx, mut rx) = watch::channel(false);
