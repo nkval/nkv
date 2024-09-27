@@ -90,12 +90,12 @@ impl Server {
                     Some(req) = get_rx.recv() => {
                         let vals = nkv.get(&req.key);
                         if vals.len() > 0 {
-                            req.resp_tx.send(NkvGetResp {
+                            let _ = req.resp_tx.send(NkvGetResp {
                                 value: vals,
                                 err: nkv::NotifyKeyValueError::NoError
                             }).await;
                         } else {
-                            req.resp_tx.send(NkvGetResp {
+                            let _ = req.resp_tx.send(NkvGetResp {
                                 value: Vec::new(),
                                 err: nkv::NotifyKeyValueError::NotFound
                             }).await;

@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use std::fmt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, watch};
 use uuid::Uuid;
 
 #[derive(Debug)]

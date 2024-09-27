@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::notifier::{Message, Notifier, NotifierError, WriteStream};
+use crate::notifier::{Notifier, NotifierError, WriteStream};
 use crate::persist_value::PersistValue;
 use crate::trie::{Trie, TrieNode};
 use std::fmt;
