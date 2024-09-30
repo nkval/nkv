@@ -17,7 +17,6 @@ use crate::notifier::{Notifier, NotifierError, WriteStream};
 use crate::persist_value::PersistValue;
 use crate::trie::{Trie, TrieNode};
 use std::fmt;
-use std::net::SocketAddr;
 use tokio::sync::Mutex;
 
 #[derive(Debug)]
@@ -252,33 +251,34 @@ impl NotifyKeyValue {
     pub async fn subscribe(
         &mut self,
         key: &str,
-        addr: SocketAddr,
+        uuid: String,
         stream: WriteStream,
     ) -> Result<(), NotifierError> {
-        // println!("DEBUG: SUBSCRIBE STATE {:?}", self.state);
         if let Some(val) = self.state.get_mut(key, None).await {
-            val.notifier.lock().await.subscribe(addr, stream).await;
+            val.notifier.lock().await.subscribe(uuid, stream).await?;
         } else {
             // Client can subscribe to a non-existent value
             let val = self.create_value(key, Box::new([]));
-            val.notifier.lock().await.subscribe(addr, stream).await;
+            val.notifier.lock().await.subscribe(uuid, stream).await?;
             self.state.insert(key, val);
         }
         Ok(())
     }
 
-    pub async fn unsubscribe(&mut self, key: &str, addr: &SocketAddr) {
+    pub async fn unsubscribe(
+        &mut self,
+        key: &str,
+        uuid: String,
+    ) -> Result<(), NotifyKeyValueError> {
         if let Some(val) = self.state.get_mut(key, None).await {
-            match val
-                .notifier
+            val.notifier
                 .lock()
                 .await
-                .unsubscribe(key.to_string(), addr)
-                .await
-            {
-                Ok(_) => (),
-                Err(e) => eprintln!("Failed to unsubscribe {}", e),
-            }
+                .unsubscribe(key.to_string(), uuid)
+                .await?;
+            Ok(())
+        } else {
+            Err(NotifyKeyValueError::NotFound)
         }
     }
 }

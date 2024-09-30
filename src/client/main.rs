@@ -88,6 +88,16 @@ async fn main() {
                         println!("SUBSCRIBE requires a key");
                     }
                 }
+                "UNSUBSCRIBE" => {
+                    if let Some(key) = parts.get(1) {
+                        let start = Instant::now();
+                        let resp = client.unsubscribe(key.to_string()).await.unwrap();
+                        let elapsed = start.elapsed();
+                        println!("Request took: {:.2?}\n{}", elapsed, resp);
+                    } else {
+                        println!("SUBSCRIBE requires a key");
+                    }
+                }
                 "QUIT" => {
                     break;
                 }

@@ -23,7 +23,6 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::to_vec;
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -112,7 +111,7 @@ impl<T> StateBuf<T> {
 
 #[derive(Debug)]
 pub struct Notifier {
-    clients: Arc<Mutex<HashMap<SocketAddr, WriteStream>>>,
+    clients: Arc<Mutex<HashMap<String, WriteStream>>>,
     // use a buffer to guarantee latest state on consumers
     // for detailed information see DESIGN_DECISIONS.md
     msg_buf: Arc<Mutex<StateBuf<Message>>>,
@@ -149,7 +148,7 @@ impl Notifier {
     }
 
     async fn send_notifications(
-        clients: Arc<Mutex<HashMap<SocketAddr, WriteStream>>>,
+        clients: Arc<Mutex<HashMap<String, WriteStream>>>,
         msg_buf: Arc<Mutex<StateBuf<Message>>>,
     ) {
         let buf_val = {
@@ -164,28 +163,32 @@ impl Notifier {
         }
     }
 
-    pub async fn subscribe(&self, addr: SocketAddr, stream: WriteStream) {
+    pub async fn subscribe(&self, uuid: String, stream: WriteStream) -> Result<(), NotifierError> {
         let mut subscribers = self.clients.lock().await;
-        subscribers.insert(addr, stream);
+        subscribers.insert(uuid.clone(), stream);
+        match subscribers.get_mut(&uuid) {
+            Some(stream) => Notifier::send_bytes(&to_vec(&Message::Hello).unwrap(), stream).await,
+            None => return Err(NotifierError::SubscribtionNotFound),
+        }
     }
 
-    pub async fn unsubscribe(&self, key: String, addr: &SocketAddr) -> Result<(), NotifierError> {
+    pub async fn unsubscribe(&self, key: String, uuid: String) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
-        Self::unsubscribe_impl(key, &mut clients, addr).await
+        Self::unsubscribe_impl(key, &mut clients, uuid).await
     }
 
     async fn unsubscribe_impl(
         key: String,
-        clients: &mut HashMap<SocketAddr, WriteStream>,
-        addr: &SocketAddr,
+        clients: &mut HashMap<String, WriteStream>,
+        uuid: String,
     ) -> Result<(), NotifierError> {
-        match clients.get_mut(&addr) {
+        match clients.get_mut(&uuid) {
             Some(stream) => {
                 Notifier::send_bytes(&to_vec(&Message::Close { key }).unwrap(), stream).await?
             }
             None => return Err(NotifierError::SubscribtionNotFound),
         }
-        clients.remove(addr);
+        clients.remove(&uuid);
         Ok(())
     }
 
@@ -217,30 +220,30 @@ impl Notifier {
     }
 
     async fn broadcast_message(
-        clients: Arc<Mutex<HashMap<SocketAddr, WriteStream>>>,
+        clients: Arc<Mutex<HashMap<String, WriteStream>>>,
         message: &Message,
     ) {
         let json_bytes = to_vec(&message).unwrap();
 
-        let keys: Vec<std::net::SocketAddr> = {
+        let keys: Vec<String> = {
             let client_guard = clients.lock().await;
             client_guard.keys().cloned().collect()
         };
 
         let mut failed_addrs = Vec::new();
-        for addr in keys.iter() {
-            if let Some(stream) = clients.lock().await.get_mut(addr) {
+        for uuid in keys.iter() {
+            if let Some(stream) = clients.lock().await.get_mut(uuid) {
                 if let Err(e) = Notifier::send_bytes(&json_bytes, stream).await {
                     eprintln!("broadcast message: {}", e);
-                    failed_addrs.push(addr.clone());
+                    failed_addrs.push(uuid.clone());
                     continue;
                 }
             }
         }
 
         let mut clients = clients.lock().await;
-        for addr in failed_addrs {
-            match Self::unsubscribe_impl("failed addr".to_string(), &mut clients, &addr).await {
+        for uuid in failed_addrs {
+            match Self::unsubscribe_impl("failed addr".to_string(), &mut clients, uuid).await {
                 Ok(_) => {}
                 Err(e) => eprintln!("Failed to unsubscribe: {}", e),
             }
@@ -269,16 +272,18 @@ impl Notifier {
 pub struct Subscriber {
     addr: String,
     key: String,
+    uuid: String,
     tx: watch::Sender<Message>,
 }
 
 impl Subscriber {
-    pub fn new(addr: &str, key: &str) -> (Self, watch::Receiver<Message>) {
+    pub fn new(addr: &str, key: &str, uuid: &str) -> (Self, watch::Receiver<Message>) {
         let (tx, rx) = watch::channel(Message::Hello);
         (
             Self {
                 addr: addr.to_string(),
                 key: key.to_string(),
+                uuid: uuid.to_string(),
                 tx,
             },
             rx,
@@ -304,12 +309,14 @@ impl Subscriber {
         let req = ServerRequest::Subscribe(BaseMessage {
             id: "0".to_string(),
             key: self.key.to_string(),
+            client_uuid: self.uuid.to_string(),
         });
         let req = serde_json::to_string(&req)?;
         writer.write_all(req.as_bytes()).await?;
         writer.write_all(b"\n").await?;
         writer.flush().await?;
 
+        // TODO: we need to talk about max buff
         let mut buffer = [0; 1024];
         loop {
             let n = reader.read(&mut buffer).await?;
@@ -335,6 +342,7 @@ impl Subscriber {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::SocketAddr;
     use tokio::io::{split, AsyncBufReadExt};
     use tokio::net::TcpListener;
 
@@ -344,9 +352,10 @@ mod tests {
             .parse()
             .expect("Unable to parse socket address");
         let key = "AWESOME_KEY".to_string();
+        let uuid = "AWESOME_UUID".to_string();
 
         let mut notifier = Notifier::new();
-        let (mut subscriber, mut rx) = Subscriber::new(srv_addr.to_string().as_str(), &key);
+        let (mut subscriber, mut rx) = Subscriber::new(srv_addr.to_string().as_str(), &key, &uuid);
         let listener = TcpListener::bind(srv_addr).await.unwrap();
         let val: Box<[u8]> = "Bazinga".to_string().into_bytes().into_boxed_slice();
         let vc = val.clone();
@@ -355,8 +364,8 @@ mod tests {
             subscriber.start().await;
         });
 
-        let handle = tokio::spawn(async move {
-            let (stream, addr) = listener.accept().await.unwrap();
+        let _handle = tokio::spawn(async move {
+            let (stream, _addr) = listener.accept().await.unwrap();
             let (read_half, write_half) = split(stream);
             let mut reader = tokio::io::BufReader::new(read_half);
             let writer = BufWriter::new(write_half);
@@ -364,14 +373,20 @@ mod tests {
             let mut buffer = String::new();
             let _ = reader.read_line(&mut buffer).await;
 
-            notifier.subscribe(addr, writer).await;
+            let _ = notifier.subscribe(uuid, writer).await;
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             notifier
                 .send_update("AWESOME_KEY".to_string(), vc.clone())
                 .await;
             sleep(Duration::from_secs(1)).await;
         });
 
-        handle.await.unwrap();
+        // handle.await.unwrap();
+        assert_eq!(true, rx.changed().await.is_ok());
+        {
+            let msg = rx.borrow();
+            assert_eq!(*msg, Message::Hello);
+        }
 
         assert_eq!(true, rx.changed().await.is_ok());
         let msg = rx.borrow();

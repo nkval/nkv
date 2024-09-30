@@ -34,12 +34,13 @@ pub struct GetMsg {
 
 pub struct BaseMsg {
     pub key: String,
+    pub uuid: String,
     pub resp_tx: mpsc::Sender<nkv::NotifyKeyValueError>,
 }
 
 pub struct SubMsg {
     key: String,
-    addr: SocketAddr,
+    pub uuid: String,
     writer: WriteStream,
     resp_tx: mpsc::Sender<nkv::NotifyKeyValueError>,
 }
@@ -51,6 +52,7 @@ pub struct Server {
     get_tx: mpsc::UnboundedSender<GetMsg>,
     del_tx: mpsc::UnboundedSender<BaseMsg>,
     sub_tx: mpsc::UnboundedSender<SubMsg>,
+    unsub_tx: mpsc::UnboundedSender<BaseMsg>,
     cancel_rx: oneshot::Receiver<()>,
 }
 
@@ -63,6 +65,7 @@ impl Server {
         let (get_tx, mut get_rx) = mpsc::unbounded_channel::<GetMsg>();
         let (del_tx, mut del_rx) = mpsc::unbounded_channel::<BaseMsg>();
         let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<SubMsg>();
+        let (unsub_tx, mut unsub_rx) = mpsc::unbounded_channel::<BaseMsg>();
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (usr_cancel_tx, mut usr_cancel_rx) = oneshot::channel();
 
@@ -75,6 +78,7 @@ impl Server {
             get_tx,
             del_tx,
             sub_tx,
+            unsub_tx,
             cancel_rx,
         };
 
@@ -110,10 +114,17 @@ impl Server {
                    }
                    Some(req) = sub_rx.recv() => {
                        let mut err = nkv::NotifyKeyValueError::NoError;
-                       match nkv.subscribe(&req.key, req.addr, req.writer).await {
+                       match nkv.subscribe(&req.key, req.uuid, req.writer).await {
                            Err(e) => { err = nkv::NotifyKeyValueError::NotifierError(e) }
                            Ok(_) => {}
                        }
+                       let _ = req.resp_tx.send(err).await;
+                   }
+                   Some(req) = unsub_rx.recv() => {
+                       let err = match nkv.unsubscribe(&req.key, req.uuid).await {
+                           Ok(_) => nkv::NotifyKeyValueError::NoError,
+                           Err(e) => e,
+                       };
                        let _ = req.resp_tx.send(err).await;
                    }
 
@@ -137,9 +148,10 @@ impl Server {
             let get_tx = self.get_tx();
             let del_tx = self.del_tx();
             let sub_tx = self.sub_tx();
+            let unsub_tx = self.unsub_tx();
 
             tokio::select! {
-                Ok((stream, addr)) = listener.accept() => {
+                Ok((stream, _addr)) = listener.accept() => {
                     let (read_half, write_half) = split(stream);
                     let mut reader = BufReader::new(read_half);
                     let writer = BufWriter::new(write_half);
@@ -164,8 +176,12 @@ impl Server {
                                             Self::handle_delete(writer, del_tx.clone(), request).await
                                         }
                                         ServerRequest::Subscribe(BaseMessage { .. }) => {
-                                            Self::handle_sub(writer, sub_tx.clone(), request, addr).await
+                                            Self::handle_sub(writer, sub_tx.clone(), request).await
                                         }
+                                        ServerRequest::Unsubscribe(BaseMessage { .. }) => {
+                                            Self::handle_unsub(writer, unsub_tx.clone(), request).await
+                                        }
+
                                     };
                                 }
                                 Err(e) => {
@@ -236,7 +252,11 @@ impl Server {
         req: request_msg::ServerRequest,
     ) {
         match req {
-            request_msg::ServerRequest::Get(request_msg::BaseMessage { id, key }) => {
+            request_msg::ServerRequest::Get(request_msg::BaseMessage {
+                id,
+                client_uuid: _,
+                key,
+            }) => {
                 let (get_resp_tx, mut get_resp_rx) = mpsc::channel(1);
                 let _ = nkv_tx.send(GetMsg {
                     key,
@@ -275,9 +295,17 @@ impl Server {
         req: request_msg::ServerRequest,
     ) {
         match req {
-            request_msg::ServerRequest::Delete(request_msg::BaseMessage { id, key }) => {
+            request_msg::ServerRequest::Delete(request_msg::BaseMessage {
+                id,
+                client_uuid,
+                key,
+            }) => {
                 let (resp_tx, mut resp_rx) = mpsc::channel(1);
-                let _ = nkv_tx.send(BaseMsg { key, resp_tx });
+                let _ = nkv_tx.send(BaseMsg {
+                    key,
+                    uuid: client_uuid,
+                    resp_tx,
+                });
                 let nkv_resp = resp_rx.recv().await.unwrap();
                 let resp = request_msg::BaseResp {
                     id,
@@ -301,14 +329,17 @@ impl Server {
         writer: WriteStream,
         nkv_tx: mpsc::UnboundedSender<SubMsg>,
         req: request_msg::ServerRequest,
-        addr: SocketAddr,
     ) {
         match req {
-            request_msg::ServerRequest::Subscribe(request_msg::BaseMessage { id: _, key }) => {
+            request_msg::ServerRequest::Subscribe(request_msg::BaseMessage {
+                id: _,
+                client_uuid,
+                key,
+            }) => {
                 let (resp_tx, _) = mpsc::channel(1);
                 let _ = nkv_tx.send(SubMsg {
                     key,
-                    addr,
+                    uuid: client_uuid,
                     writer,
                     resp_tx,
                 });
@@ -318,6 +349,42 @@ impl Server {
                     id: "0".to_string(),
                     status: StatusCode::INTERNAL_SERVER_ERROR,
                     message: "wrong message for sub handle".to_string(),
+                };
+                Self::write_response(ServerResponse::Base(resp), writer).await;
+            }
+        }
+    }
+
+    async fn handle_unsub(
+        writer: WriteStream,
+        nkv_tx: mpsc::UnboundedSender<BaseMsg>,
+        req: request_msg::ServerRequest,
+    ) {
+        match req {
+            request_msg::ServerRequest::Unsubscribe(request_msg::BaseMessage {
+                id,
+                client_uuid,
+                key,
+            }) => {
+                let (resp_tx, mut resp_rx) = mpsc::channel(1);
+                let _ = nkv_tx.send(BaseMsg {
+                    key,
+                    uuid: client_uuid,
+                    resp_tx,
+                });
+                let nkv_resp = resp_rx.recv().await.unwrap();
+                let resp = request_msg::BaseResp {
+                    id,
+                    status: nkv_resp.to_http_status(),
+                    message: nkv_resp.to_string(),
+                };
+                Self::write_response(ServerResponse::Base(resp), writer).await;
+            }
+            _ => {
+                let resp = request_msg::BaseResp {
+                    id: "0".to_string(),
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: "wrong message for unsub handle".to_string(),
                 };
                 Self::write_response(ServerResponse::Base(resp), writer).await;
             }
@@ -335,6 +402,9 @@ impl Server {
     }
     pub fn sub_tx(&self) -> mpsc::UnboundedSender<SubMsg> {
         self.sub_tx.clone()
+    }
+    pub fn unsub_tx(&self) -> mpsc::UnboundedSender<BaseMsg> {
+        self.unsub_tx.clone()
     }
 }
 
@@ -388,15 +458,15 @@ mod tests {
         assert_eq!(got.value, vec!(Arc::from(value)));
 
         // create sub
-        let addr: SocketAddr = url.parse().expect("Unable to parse addr");
         let stream = TcpStream::connect(&url).await.unwrap();
         let (_, write) = tokio::io::split(stream);
         let writer = BufWriter::new(write);
+        let uuid = "MY_AWESOME_UUID".to_string();
 
         let _ = sub_tx.send(SubMsg {
             key: key.clone(),
             resp_tx: resp_tx.clone(),
-            addr,
+            uuid: uuid.clone(),
             writer,
         });
         let got = resp_rx.recv().await.unwrap();
@@ -404,6 +474,7 @@ mod tests {
 
         let _ = del_tx.send(BaseMsg {
             key: key.clone(),
+            uuid: uuid.clone(),
             resp_tx: resp_tx.clone(),
         });
         let got = resp_rx.recv().await.unwrap();
@@ -481,6 +552,7 @@ mod tests {
             });
         });
 
+        // we can subscribe to non existent key
         let sub_resp = client
             .subscribe("non-existent-key".to_string(), send_to_channel.clone())
             .await
@@ -493,21 +565,44 @@ mod tests {
                 message: "Subscribed".to_string(),
             })
         );
+        if let Some(val) = rx.recv().await {
+            assert_eq!(val, Message::Hello);
+        } else {
+            panic!("Expected value");
+        }
 
-        let sub_resp = client
-            .subscribe(key.clone(), send_to_channel.clone())
+        let unsub_resp = client
+            .unsubscribe("non-existent-key".to_string())
             .await
             .unwrap();
         assert_eq!(
-            sub_resp,
+            unsub_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
                 id: "0".to_string(),
-                status: http::StatusCode::OK,
-                message: "Subscribed".to_string(),
+                status: StatusCode::OK,
+                message: "No Error".to_string(),
             })
         );
-        // Give server time to subscribe
-        // tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        if let Some(val) = rx.recv().await {
+            assert_eq!(
+                val,
+                Message::Close {
+                    key: "non-existent-key".to_string()
+                }
+            );
+        } else {
+            panic!("Expected value");
+        }
+
+        let _sub_resp = client
+            .subscribe(key.clone(), send_to_channel.clone())
+            .await
+            .unwrap();
+        if let Some(val) = rx.recv().await {
+            assert_eq!(val, Message::Hello);
+        } else {
+            panic!("Expected value");
+        }
 
         let new_value: Box<[u8]> = Box::new([42, 0, 1, 0, 1]);
         let resp = client.put(key.clone(), new_value.clone()).await.unwrap();
@@ -526,6 +621,12 @@ mod tests {
             panic!("Expected value");
         }
 
+        // Check if we delete value it'll automatically unsubscribe
+        // all of the clients
+        let _sub_resp = client
+            .subscribe(key.clone(), send_to_channel.clone())
+            .await
+            .unwrap();
         let del_resp = client.delete(key.clone()).await.unwrap();
         assert_eq!(
             del_resp,

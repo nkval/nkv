@@ -228,6 +228,7 @@ fn bench_server(c: &mut Criterion) {
                     let (del_resp_tx, mut del_resp_rx) = mpsc::channel(1);
                     let _ = del_tx.send(BaseMsg {
                         key: "key1".to_string(),
+                        uuid: "0".to_string(),
                         resp_tx: del_resp_tx,
                     });
                     let result = del_resp_rx.recv().await.unwrap();

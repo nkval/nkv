@@ -37,6 +37,7 @@ impl std::error::Error for NkvClientError {}
 
 pub struct NkvClient {
     addr: String,
+    uuid: String,
     subscriptions: HashMap<String, bool>,
 }
 
@@ -48,6 +49,7 @@ impl NkvClient {
     pub fn new(addr: &str) -> Self {
         Self {
             addr: addr.to_string(),
+            uuid: Self::uuid(),
             subscriptions: HashMap::new(),
         }
     }
@@ -59,6 +61,7 @@ impl NkvClient {
     pub async fn get(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
         let req = ServerRequest::Get(BaseMessage {
             id: Self::uuid(),
+            client_uuid: self.uuid.clone(),
             key,
         });
         self.send_request(&req).await
@@ -68,6 +71,7 @@ impl NkvClient {
         let req = ServerRequest::Put(PutMessage {
             base: BaseMessage {
                 id: Self::uuid(),
+                client_uuid: self.uuid.clone(),
                 key,
             },
             value: val,
@@ -78,6 +82,16 @@ impl NkvClient {
     pub async fn delete(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
         let req = ServerRequest::Delete(BaseMessage {
             id: Self::uuid(),
+            client_uuid: self.uuid.clone(),
+            key,
+        });
+        self.send_request(&req).await
+    }
+
+    pub async fn unsubscribe(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
+        let req = ServerRequest::Unsubscribe(BaseMessage {
+            id: Self::uuid(),
+            client_uuid: self.uuid.clone(),
             key,
         });
         self.send_request(&req).await
@@ -97,7 +111,7 @@ impl NkvClient {
             }));
         }
 
-        let (mut subscriber, mut rx) = Subscriber::new(&self.addr, &key);
+        let (mut subscriber, mut rx) = Subscriber::new(&self.addr, &key, &self.uuid);
 
         tokio::spawn(async move {
             // TODO: stop when cancleed

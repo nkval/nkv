@@ -11,6 +11,7 @@ use std::fmt;
 pub struct BaseMessage {
     pub id: String,
     pub key: String,
+    pub client_uuid: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -27,6 +28,7 @@ pub enum ServerRequest {
     Get(BaseMessage),
     Delete(BaseMessage),
     Subscribe(BaseMessage),
+    Unsubscribe(BaseMessage),
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
