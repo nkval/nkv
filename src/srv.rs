@@ -12,18 +12,20 @@ use tokio::io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::nkv;
-use crate::notifier::WriteStream;
+use crate::errors::NotifyKeyValueError;
+use crate::nkv::NotifyKeyValue;
+use crate::notifier::{TcpNotifier, TcpWriter};
+use crate::persist_value::FileStorage;
 use crate::request_msg::{self, BaseMessage, PutMessage, ServerRequest, ServerResponse};
 
 pub struct PutMsg {
     pub key: String,
     pub value: Box<[u8]>,
-    pub resp_tx: mpsc::Sender<nkv::NotifyKeyValueError>,
+    pub resp_tx: mpsc::Sender<NotifyKeyValueError>,
 }
 
 pub struct NkvGetResp {
-    err: nkv::NotifyKeyValueError,
+    err: NotifyKeyValueError,
     value: Vec<Arc<[u8]>>,
 }
 
@@ -35,14 +37,14 @@ pub struct GetMsg {
 pub struct BaseMsg {
     pub key: String,
     pub uuid: String,
-    pub resp_tx: mpsc::Sender<nkv::NotifyKeyValueError>,
+    pub resp_tx: mpsc::Sender<NotifyKeyValueError>,
 }
 
 pub struct SubMsg {
     key: String,
     pub uuid: String,
-    writer: WriteStream,
-    resp_tx: mpsc::Sender<nkv::NotifyKeyValueError>,
+    writer: TcpWriter,
+    resp_tx: mpsc::Sender<NotifyKeyValueError>,
 }
 
 // Note that IP addr is locked only when serve is called
@@ -69,7 +71,7 @@ impl Server {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (usr_cancel_tx, mut usr_cancel_rx) = oneshot::channel();
 
-        let mut nkv = nkv::NotifyKeyValue::new(path)?;
+        let mut nkv = NotifyKeyValue::<FileStorage, TcpNotifier>::new(path)?;
         let addr: SocketAddr = addr.parse().expect("Unable to parse addr");
 
         let srv = Self {
@@ -89,40 +91,40 @@ impl Server {
                 tokio::select! {
                     Some(req) = put_rx.recv() => {
                         nkv.put(&req.key, req.value).await;
-                        let _ = req.resp_tx.send(nkv::NotifyKeyValueError::NoError).await;
+                        let _ = req.resp_tx.send(NotifyKeyValueError::NoError).await;
                     }
                     Some(req) = get_rx.recv() => {
                         let vals = nkv.get(&req.key);
                         if vals.len() > 0 {
                             let _ = req.resp_tx.send(NkvGetResp {
                                 value: vals,
-                                err: nkv::NotifyKeyValueError::NoError
+                                err: NotifyKeyValueError::NoError
                             }).await;
                         } else {
                             let _ = req.resp_tx.send(NkvGetResp {
                                 value: Vec::new(),
-                                err: nkv::NotifyKeyValueError::NotFound
+                                err: NotifyKeyValueError::NotFound
                             }).await;
                         }
                    }
                    Some(req) = del_rx.recv() => {
                        let err = match nkv.delete(&req.key).await {
-                           Ok(_) => nkv::NotifyKeyValueError::NoError,
+                           Ok(_) => NotifyKeyValueError::NoError,
                            Err(e) => e,
                        };
                        let _ = req.resp_tx.send(err).await;
                    }
                    Some(req) = sub_rx.recv() => {
-                       let mut err = nkv::NotifyKeyValueError::NoError;
+                       let mut err = NotifyKeyValueError::NoError;
                        match nkv.subscribe(&req.key, req.uuid, req.writer).await {
-                           Err(e) => { err = nkv::NotifyKeyValueError::NotifierError(e) }
+                           Err(e) => { err = NotifyKeyValueError::NotifierError(e) }
                            Ok(_) => {}
                        }
                        let _ = req.resp_tx.send(err).await;
                    }
                    Some(req) = unsub_rx.recv() => {
                        let err = match nkv.unsubscribe(&req.key, req.uuid).await {
-                           Ok(_) => nkv::NotifyKeyValueError::NoError,
+                           Ok(_) => NotifyKeyValueError::NoError,
                            Err(e) => e,
                        };
                        let _ = req.resp_tx.send(err).await;
@@ -202,7 +204,7 @@ impl Server {
         }
     }
 
-    async fn write_response(reply: ServerResponse, mut writer: WriteStream) {
+    async fn write_response(reply: ServerResponse, mut writer: TcpWriter) {
         let json_reply = serde_json::to_string(&reply).unwrap();
         if let Err(e) = writer.write_all(&json_reply.into_bytes()).await {
             eprintln!("Failed to write to socket; err = {:?}", e);
@@ -214,7 +216,7 @@ impl Server {
     }
 
     async fn handle_put(
-        writer: WriteStream,
+        writer: TcpWriter,
         nkv_tx: mpsc::UnboundedSender<PutMsg>,
         req: request_msg::ServerRequest,
     ) {
@@ -247,7 +249,7 @@ impl Server {
     }
 
     async fn handle_get(
-        writer: WriteStream,
+        writer: TcpWriter,
         nkv_tx: mpsc::UnboundedSender<GetMsg>,
         req: request_msg::ServerRequest,
     ) {
@@ -290,7 +292,7 @@ impl Server {
     }
 
     async fn handle_delete(
-        writer: WriteStream,
+        writer: TcpWriter,
         nkv_tx: mpsc::UnboundedSender<BaseMsg>,
         req: request_msg::ServerRequest,
     ) {
@@ -326,7 +328,7 @@ impl Server {
     }
 
     async fn handle_sub(
-        writer: WriteStream,
+        writer: TcpWriter,
         nkv_tx: mpsc::UnboundedSender<SubMsg>,
         req: request_msg::ServerRequest,
     ) {
@@ -356,7 +358,7 @@ impl Server {
     }
 
     async fn handle_unsub(
-        writer: WriteStream,
+        writer: TcpWriter,
         nkv_tx: mpsc::UnboundedSender<BaseMsg>,
         req: request_msg::ServerRequest,
     ) {
@@ -445,7 +447,7 @@ mod tests {
         });
 
         let message = resp_rx.recv().await.unwrap();
-        assert!(matches!(message, nkv::NotifyKeyValueError::NoError));
+        assert!(matches!(message, NotifyKeyValueError::NoError));
 
         let (get_resp_tx, mut get_resp_rx) = mpsc::channel(1);
         let _ = get_tx.send(GetMsg {
@@ -453,7 +455,7 @@ mod tests {
             resp_tx: get_resp_tx.clone(),
         });
         let got = get_resp_rx.recv().await.unwrap();
-        assert!(matches!(got.err, nkv::NotifyKeyValueError::NoError));
+        assert!(matches!(got.err, NotifyKeyValueError::NoError));
 
         assert_eq!(got.value, vec!(Arc::from(value)));
 
@@ -470,7 +472,7 @@ mod tests {
             writer,
         });
         let got = resp_rx.recv().await.unwrap();
-        assert!(matches!(got, nkv::NotifyKeyValueError::NoError));
+        assert!(matches!(got, NotifyKeyValueError::NoError));
 
         let _ = del_tx.send(BaseMsg {
             key: key.clone(),
@@ -478,14 +480,14 @@ mod tests {
             resp_tx: resp_tx.clone(),
         });
         let got = resp_rx.recv().await.unwrap();
-        assert!(matches!(got, nkv::NotifyKeyValueError::NoError));
+        assert!(matches!(got, NotifyKeyValueError::NoError));
 
         let _ = get_tx.send(GetMsg {
             key: key.clone(),
             resp_tx: get_resp_tx.clone(),
         });
         let got = get_resp_rx.recv().await.unwrap();
-        assert!(matches!(got.err, nkv::NotifyKeyValueError::NotFound));
+        assert!(matches!(got.err, NotifyKeyValueError::NotFound));
     }
 
     #[tokio::test]

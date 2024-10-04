@@ -4,7 +4,7 @@ This document is a collection of decisions answering **Whys** that developer mig
 looking at the code. If you think that your patch might raise why which would require a thorough
 explanation, please, write it here and refer to this doc in the comment section.
 
-### Notifier
+### TcpNotifier
 
 #### Why use buffer to guarantee latest state on consumers?
 
