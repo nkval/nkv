@@ -17,8 +17,12 @@
 extern crate serde;
 extern crate serde_json;
 
+use crate::errors::NotifierError;
+use crate::traits::Notifier;
 use crate::BaseMessage;
 use crate::ServerRequest;
+
+use async_trait::async_trait;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::to_vec;
@@ -29,33 +33,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::{watch, Mutex};
 use tokio::time::{sleep, Duration};
-
-#[derive(Debug)]
-pub enum NotifierError {
-    FailedToWriteMessage(tokio::io::Error),
-    FailedToFlushMessage(tokio::io::Error),
-    SubscribtionNotFound,
-}
-
-impl fmt::Display for NotifierError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            NotifierError::FailedToWriteMessage(e) => write!(f, "Failed to Write Message: {}", e),
-            NotifierError::FailedToFlushMessage(e) => write!(f, "Failed to Flush Message: {}", e),
-            NotifierError::SubscribtionNotFound => write!(f, "Subscription not found"),
-        }
-    }
-}
-
-impl std::error::Error for NotifierError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            NotifierError::FailedToWriteMessage(e) => Some(e),
-            NotifierError::FailedToFlushMessage(e) => Some(e),
-            NotifierError::SubscribtionNotFound => None,
-        }
-    }
-}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum Message {
@@ -79,8 +56,6 @@ impl fmt::Display for Message {
         Ok(())
     }
 }
-
-pub type WriteStream = BufWriter<tokio::io::WriteHalf<tokio::net::TcpStream>>;
 
 #[derive(Debug)]
 struct StateBuf<T> {
@@ -109,17 +84,92 @@ impl<T> StateBuf<T> {
     }
 }
 
+pub type TcpWriter = BufWriter<tokio::io::WriteHalf<tokio::net::TcpStream>>;
+
 #[derive(Debug)]
-pub struct Notifier {
-    clients: Arc<Mutex<HashMap<String, WriteStream>>>,
+pub struct TcpNotifier {
+    clients: Arc<Mutex<HashMap<String, TcpWriter>>>,
     // use a buffer to guarantee latest state on consumers
     // for detailed information see DESIGN_DECISIONS.md
     msg_buf: Arc<Mutex<StateBuf<Message>>>,
     notifier: watch::Sender<bool>,
 }
 
-impl Notifier {
-    pub fn new() -> Self {
+impl TcpNotifier {
+    async fn send_notifications(
+        clients: Arc<Mutex<HashMap<String, TcpWriter>>>,
+        msg_buf: Arc<Mutex<StateBuf<Message>>>,
+    ) {
+        let buf_val = {
+            let mut buf = msg_buf.lock().await;
+            buf.pop()
+        };
+
+        if let Some(val) = buf_val {
+            tokio::spawn(async move {
+                Self::broadcast_message(clients, &val).await;
+            });
+        }
+    }
+    async fn unsubscribe_impl(
+        key: String,
+        clients: &mut HashMap<String, TcpWriter>,
+        uuid: String,
+    ) -> Result<(), NotifierError> {
+        match clients.get_mut(&uuid) {
+            Some(stream) => {
+                Self::send_bytes(&to_vec(&Message::Close { key }).unwrap(), stream).await?
+            }
+            None => return Err(NotifierError::SubscribtionNotFound),
+        }
+        clients.remove(&uuid);
+        Ok(())
+    }
+
+    async fn send_bytes(msg: &Vec<u8>, stream: &mut TcpWriter) -> Result<(), NotifierError> {
+        if let Err(e) = stream.write_all(&msg).await {
+            return Err(NotifierError::FailedToWriteMessage(e));
+        }
+        if let Err(e) = stream.flush().await {
+            return Err(NotifierError::FailedToFlushMessage(e));
+        }
+        Ok(())
+    }
+
+    async fn broadcast_message(clients: Arc<Mutex<HashMap<String, TcpWriter>>>, message: &Message) {
+        let json_bytes = to_vec(&message).unwrap();
+
+        let keys: Vec<String> = {
+            let client_guard = clients.lock().await;
+            client_guard.keys().cloned().collect()
+        };
+
+        let mut failed_addrs = Vec::new();
+        for uuid in keys.iter() {
+            if let Some(stream) = clients.lock().await.get_mut(uuid) {
+                if let Err(e) = Self::send_bytes(&json_bytes, stream).await {
+                    eprintln!("broadcast message: {}", e);
+                    failed_addrs.push(uuid.clone());
+                    continue;
+                }
+            }
+        }
+
+        let mut clients = clients.lock().await;
+        for uuid in failed_addrs {
+            match Self::unsubscribe_impl("failed addr".to_string(), &mut clients, uuid).await {
+                Ok(_) => {}
+                Err(e) => eprintln!("Failed to unsubscribe: {}", e),
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Notifier for TcpNotifier {
+    type W = TcpWriter;
+
+    fn new() -> Self {
         let clients = Arc::new(Mutex::new(HashMap::new()));
         let msg_buf = Arc::new(Mutex::new(StateBuf::new()));
         let (tx, mut rx) = watch::channel(false);
@@ -147,56 +197,25 @@ impl Notifier {
         res
     }
 
-    async fn send_notifications(
-        clients: Arc<Mutex<HashMap<String, WriteStream>>>,
-        msg_buf: Arc<Mutex<StateBuf<Message>>>,
-    ) {
-        let buf_val = {
-            let mut buf = msg_buf.lock().await;
-            buf.pop()
-        };
-
-        if let Some(val) = buf_val {
-            tokio::spawn(async move {
-                Self::broadcast_message(clients, &val).await;
-            });
-        }
-    }
-
-    pub async fn subscribe(&self, uuid: String, stream: WriteStream) -> Result<(), NotifierError> {
+    async fn subscribe(&self, uuid: String, stream: Self::W) -> Result<(), NotifierError> {
         let mut subscribers = self.clients.lock().await;
         subscribers.insert(uuid.clone(), stream);
         match subscribers.get_mut(&uuid) {
-            Some(stream) => Notifier::send_bytes(&to_vec(&Message::Hello).unwrap(), stream).await,
+            Some(stream) => Self::send_bytes(&to_vec(&Message::Hello).unwrap(), stream).await,
             None => return Err(NotifierError::SubscribtionNotFound),
         }
     }
 
-    pub async fn unsubscribe(&self, key: String, uuid: String) -> Result<(), NotifierError> {
+    async fn unsubscribe(&self, key: String, uuid: String) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
         Self::unsubscribe_impl(key, &mut clients, uuid).await
     }
 
-    async fn unsubscribe_impl(
-        key: String,
-        clients: &mut HashMap<String, WriteStream>,
-        uuid: String,
-    ) -> Result<(), NotifierError> {
-        match clients.get_mut(&uuid) {
-            Some(stream) => {
-                Notifier::send_bytes(&to_vec(&Message::Close { key }).unwrap(), stream).await?
-            }
-            None => return Err(NotifierError::SubscribtionNotFound),
-        }
-        clients.remove(&uuid);
-        Ok(())
-    }
-
-    pub async fn unsubscribe_all(&self, key: &str) -> Result<(), NotifierError> {
+    async fn unsubscribe_all(&self, key: &str) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
 
         for (_, mut stream) in clients.drain() {
-            Notifier::send_bytes(
+            Self::send_bytes(
                 &to_vec(&Message::Close {
                     key: key.to_string(),
                 })
@@ -209,53 +228,12 @@ impl Notifier {
         Ok(())
     }
 
-    pub async fn send_bytes(msg: &Vec<u8>, stream: &mut WriteStream) -> Result<(), NotifierError> {
-        if let Err(e) = stream.write_all(&msg).await {
-            return Err(NotifierError::FailedToWriteMessage(e));
-        }
-        if let Err(e) = stream.flush().await {
-            return Err(NotifierError::FailedToFlushMessage(e));
-        }
-        Ok(())
-    }
-
-    async fn broadcast_message(
-        clients: Arc<Mutex<HashMap<String, WriteStream>>>,
-        message: &Message,
-    ) {
-        let json_bytes = to_vec(&message).unwrap();
-
-        let keys: Vec<String> = {
-            let client_guard = clients.lock().await;
-            client_guard.keys().cloned().collect()
-        };
-
-        let mut failed_addrs = Vec::new();
-        for uuid in keys.iter() {
-            if let Some(stream) = clients.lock().await.get_mut(uuid) {
-                if let Err(e) = Notifier::send_bytes(&json_bytes, stream).await {
-                    eprintln!("broadcast message: {}", e);
-                    failed_addrs.push(uuid.clone());
-                    continue;
-                }
-            }
-        }
-
-        let mut clients = clients.lock().await;
-        for uuid in failed_addrs {
-            match Self::unsubscribe_impl("failed addr".to_string(), &mut clients, uuid).await {
-                Ok(_) => {}
-                Err(e) => eprintln!("Failed to unsubscribe: {}", e),
-            }
-        }
-    }
-
-    pub async fn send_hello(&mut self) {
+    async fn send_hello(&mut self) {
         self.msg_buf.lock().await.store(Message::Hello);
         let _ = self.notifier.send(true);
     }
 
-    pub async fn send_update(&mut self, key: String, new_value: Box<[u8]>) {
+    async fn send_update(&mut self, key: String, new_value: Box<[u8]>) {
         self.msg_buf.lock().await.store(Message::Update {
             key,
             value: new_value,
@@ -263,7 +241,7 @@ impl Notifier {
         let _ = self.notifier.send(true);
     }
 
-    pub async fn send_close(&mut self, key: String) {
+    async fn send_close(&mut self, key: String) {
         self.msg_buf.lock().await.store(Message::Close { key });
         let _ = self.notifier.send(true);
     }
@@ -354,7 +332,7 @@ mod tests {
         let key = "AWESOME_KEY".to_string();
         let uuid = "AWESOME_UUID".to_string();
 
-        let mut notifier = Notifier::new();
+        let mut notifier = TcpNotifier::new();
         let (mut subscriber, mut rx) = Subscriber::new(srv_addr.to_string().as_str(), &key, &uuid);
         let listener = TcpListener::bind(srv_addr).await.unwrap();
         let val: Box<[u8]> = "Bazinga".to_string().into_bytes().into_boxed_slice();

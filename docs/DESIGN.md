@@ -20,14 +20,24 @@ handles the channel between server and client to notify latter if anybody change
 channel is a OS-primitive (sockets) so you can 
 write clients in any programming language you want. Last two components are `Server` and `NkvClient`.
 Former creates `NotifyKeyValue` object and manages its access from asynchronous requests. It does 
-so by exposing endpoints through some of the OS-primitive (socket), so again, clients could
+so by exposing endpoints through some of the OS-primitive (for example, socket), so again, clients could
 be in any programming language you like; Latter is used to connect to `Server` and implement the API
-(see what is it for section)
-
-You can call those components interfaces, and implement them differently to tailor to your particular 
-case, i.e. use mysql for persist value or unix domain socket for `Notfifier` and TCP for `Server` 
 
 From the flow diagram you can see how `NotifyKeyValue` processes requests.
 
 ![nkv flow diagram](../imgs/nkv_flow.drawio.png)
 
+# How can I tailor `nkv` to my specific needs?
+
+Default implementation of `nkv` might not be suitable to your particular use case, f.e. you want to store
+values in a mysql database or you do not want to keep them at all, or you want to notify your clients via 
+unix domain socket or zmq socket because your existing system relies on it or you think it's better, etc.
+
+Well, you can fairly easily do that. We abstract `PersistValue` and `Notifier` as traits. You can see it in
+[traits.rs](../src/traits.rs) file. `NotifyKeyValue` structure is using generics to abstract from concrete `PersistValue` and
+`Notifier` implementation so writing your own structure which fullfills certain trait you'll be able to create
+your version of `nkv`. 
+*Note:*
+
+- Implementing different interface you might create or loose some of the constraints that were there. See [descision](./DESIGN_DECISIONS.md) doc for that. 
+- Currenltly `Server` and `NotifyKeyValue` are not abstracted through traits. We should try to keep balance between abstracting and keeping things simple.

@@ -4,11 +4,13 @@
 // communicate with Server to get, put, subscribe
 // and unsubscribe to a value
 
+pub mod errors;
 pub mod nkv;
 pub mod notifier;
-mod persist_value;
+pub mod persist_value;
 pub mod request_msg;
 pub mod srv;
+pub mod traits;
 pub mod trie;
 
 use crate::notifier::{Message, Subscriber};

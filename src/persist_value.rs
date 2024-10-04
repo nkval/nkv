@@ -4,6 +4,7 @@
 // on a file system. Writing to a disk is an
 // atomic operation
 
+use crate::traits::PersistValue;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -11,13 +12,13 @@ use std::sync::Arc;
 use tempfile::NamedTempFile;
 
 #[derive(Debug, Clone)]
-pub struct PersistValue {
+pub struct FileStorage {
     data: Arc<[u8]>,
     fp: PathBuf,
 }
 
-impl PersistValue {
-    pub fn new(new_data: Box<[u8]>, filepath: PathBuf) -> std::io::Result<Self> {
+impl PersistValue for FileStorage {
+    fn new(new_data: Box<[u8]>, filepath: PathBuf) -> std::io::Result<Self> {
         atomic_write(&*new_data, &filepath)?;
 
         Ok(Self {
@@ -25,9 +26,7 @@ impl PersistValue {
             fp: filepath,
         })
     }
-
-    pub fn from_checkpoint(filepath: &Path) -> std::io::Result<Self> {
-        println!("Reading from checkpoint {:?}", filepath);
+    fn from_checkpoint(filepath: &Path) -> std::io::Result<Self> {
         let data = fs::read(filepath)?;
 
         Ok(Self {
@@ -36,23 +35,23 @@ impl PersistValue {
         })
     }
 
-    pub fn update(&mut self, new_data: Box<[u8]>) -> std::io::Result<()> {
+    fn update(&mut self, new_data: Box<[u8]>) -> std::io::Result<()> {
         atomic_write(&*new_data, &self.fp)?;
 
         self.data = new_data.into();
         Ok(())
     }
 
-    pub fn delete_checkpoint(&self) -> std::io::Result<()> {
+    fn delete_checkpoint(&self) -> std::io::Result<()> {
         fs::remove_file(&self.fp)
     }
 
-    pub fn data(&self) -> Arc<[u8]> {
+    fn data(&self) -> Arc<[u8]> {
         Arc::clone(&self.data)
     }
 }
 
-impl PartialEq for PersistValue {
+impl PartialEq for FileStorage {
     fn eq(&self, other: &Self) -> bool {
         self.fp == other.fp && self.data == other.data
     }
@@ -79,12 +78,12 @@ mod tests {
 
         let original_data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
 
-        let persist_value = PersistValue::new(original_data.clone(), file_path.clone())?;
+        let persist_value = FileStorage::new(original_data.clone(), file_path.clone())?;
 
         let data_from_file = fs::read(file_path.clone())?;
         assert_eq!(data_from_file, original_data.as_ref());
 
-        let loaded_persist_value = PersistValue::from_checkpoint(file_path.as_path())?;
+        let loaded_persist_value = FileStorage::from_checkpoint(file_path.as_path())?;
 
         assert_eq!(persist_value, loaded_persist_value);
 
@@ -100,7 +99,7 @@ mod tests {
 
         let initial_data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
 
-        let mut persist_value = PersistValue::new(initial_data.clone(), file_path.clone())?;
+        let mut persist_value = FileStorage::new(initial_data.clone(), file_path.clone())?;
 
         let new_data: Box<[u8]> = Box::new([6, 7, 8, 9, 10]);
 
@@ -123,7 +122,7 @@ mod tests {
 
         let initial_data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
 
-        let persist_value = PersistValue::new(initial_data.clone(), file_path.clone())?;
+        let persist_value = FileStorage::new(initial_data.clone(), file_path.clone())?;
 
         assert!(file_path.exists());
 
