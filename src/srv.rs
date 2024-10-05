@@ -117,7 +117,9 @@ impl Server {
                    Some(req) = sub_rx.recv() => {
                        let mut err = NotifyKeyValueError::NoError;
                        match nkv.subscribe(&req.key, req.uuid, req.writer).await {
-                           Err(e) => { err = NotifyKeyValueError::NotifierError(e) }
+                           Err(e) => {
+                                err = NotifyKeyValueError::NotifierError(e)
+                            }
                            Ok(_) => {}
                        }
                        let _ = req.resp_tx.send(err).await;

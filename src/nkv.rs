@@ -9,7 +9,7 @@
 use std::fs;
 use std::future::Future;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -43,14 +43,14 @@ impl<P: PersistValue, N: Notifier + std::marker::Send + 'static> NotifyKeyValue<
 
             if path.is_file() {
                 match path.file_name() {
-                    Some(fp) => {
-                        let key = fp.to_str().unwrap();
+                    Some(_fp) => {
                         let value = Value {
                             pv: P::from_checkpoint(&path)?,
                             notifier: Arc::new(Mutex::new(N::new())),
                         };
-
-                        res.state.insert(key, value);
+                        // TODO: remove unwrap
+                        let key = Self::persist_path_to_key(&path, &res.persist_path).unwrap();
+                        res.state.insert(&key, value);
                     }
                     None => {
                         return Err(io::Error::new(
@@ -115,9 +115,10 @@ impl<P: PersistValue, N: Notifier + std::marker::Send + 'static> NotifyKeyValue<
                 .send_update(key.to_string(), value.clone())
                 .await;
         } else {
+            let pv_key = Self::key_to_persist_path(key);
             let val = Value {
                 // TODO: REMOVE UNWRAP AND ADD PROPER HANDLING
-                pv: P::new(value.clone(), self.persist_path.join(key)).unwrap(),
+                pv: P::new(value.clone(), self.persist_path.join(pv_key)).unwrap(),
                 notifier: Arc::new(Mutex::new(N::new())),
             };
             self.state.insert(key, val);
@@ -198,8 +199,9 @@ impl<P: PersistValue, N: Notifier + std::marker::Send + 'static> NotifyKeyValue<
             val.notifier.lock().await.subscribe(uuid, stream).await?;
         } else {
             // Client can subscribe to a non-existent value
+            let pv_key = &Self::key_to_persist_path(key);
             let val = Value {
-                pv: P::new(Box::new([]), self.persist_path.join(key))?,
+                pv: P::new(Box::new([]), self.persist_path.join(pv_key))?,
                 notifier: Arc::new(Mutex::new(N::new())),
             };
             val.notifier.lock().await.subscribe(uuid, stream).await?;
@@ -222,6 +224,27 @@ impl<P: PersistValue, N: Notifier + std::marker::Send + 'static> NotifyKeyValue<
             Ok(())
         } else {
             Err(NotifyKeyValueError::NotFound)
+        }
+    }
+
+    fn key_to_persist_path(key: &str) -> String {
+        key.replace('.', "/") + ".json"
+    }
+    fn persist_path_to_key(input: &PathBuf, prefix: &Path) -> Option<String> {
+        // Strip the provided prefix from the input path
+        if let Ok(stripped) = input.strip_prefix(prefix) {
+            let input_str = stripped.to_string_lossy();
+
+            // Check if the string ends with ".json"
+            if input_str.ends_with(".json") {
+                // Remove the ".json" and replace slashes with dots
+                let without_json = input_str.trim_end_matches(".json");
+                Some(without_json.replace('/', "."))
+            } else {
+                None
+            }
+        } else {
+            None // If the prefix doesn't match, return None
         }
     }
 }

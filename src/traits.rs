@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-pub trait PersistValue: PartialEq {
+pub trait PersistValue: Debug + PartialEq {
     fn new(data: Box<[u8]>, filepath: PathBuf) -> std::io::Result<Self>
     where
         Self: Sized;
@@ -21,7 +21,7 @@ pub trait PersistValue: PartialEq {
 }
 
 #[async_trait]
-pub trait Notifier {
+pub trait Notifier: Debug {
     type W;
 
     fn new() -> Self
