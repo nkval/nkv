@@ -20,7 +20,27 @@ For more information reffer to [this](./docs/DESIGN_DECISIONS.md)
 When you have some shared state between services/processes and you also want to be notified when the value is changed
 
 ### How do I use it?
-In order to use it you should install Rust programming language. If you're running Linux or OSX you can do so via `rustup`
+
+#### Using docker containers
+
+You can directly pull docker containers for client and server. They are published with each release:
+
+Make sure that you have docker [installed](https://docs.docker.com/engine/install/)
+
+```sh
+docker run -d --net=host uncledecart/nkv:latest ./nkv-server "0.0.0.0:4222"
+docker run -it --net=host uncledecart/nkv:latest ./nkv-client "4222"
+```
+
+when using network other than the host, the network implementation may impact network performance, unrelated to nkv itself.
+Also docker container builds nkv with musl, not glibc, which introduce slight perfomance degradation but gives way
+smaller container size, for more information refer to [Design decisions doc](./docs/DESIGN_DECISIONS.md)
+
+#### Building locally
+
+If you want latest version or you want to modify `nkv` to use different storage or notification policies,
+you can build and run `nkv` locally. In order to use it you should install Rust programming language.
+If you're running Linux or OSX you can do so via `rustup`
 
 ```sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

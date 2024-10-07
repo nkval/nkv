@@ -1,0 +1,28 @@
+[target.aarch64-unknown-linux-musl]
+linker = "/usr/bin/clang"
+rustflags = [
+    "-C",
+    "link-arg=--ld-path=/usr/bin/mold",
+    "-C",
+    "link-arg=--target=aarch64-unknown-linux-musl",
+]
+
+[target.x86_64-unknown-linux-musl]
+linker = "/usr/bin/clang"
+rustflags = [
+    "-C",
+    "link-arg=--ld-path=/usr/bin/mold",
+    "-C",
+    "link-arg=--target=x86_64-unknown-linux-musl",
+]
+
+# FIXME: riscv64 is not yet available in rust:1.80.1-alpine3.20
+# but both clang and mold support it. Alos musl-dev is available in Alpine 3.20
+# [target.riscv64gc-unknown-linux-gnu]
+# linker = "/usr/bin/clang"
+# rustflags = [
+#     "-C",
+#     "link-arg=--ld-path=/usr/bin/mold",
+#     "-C",
+#     "link-arg=--target=riscv64-unknown-linux-musl",
+# ]
