@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
-use nkv::nkv::NotifyKeyValue;
+use nkv::nkv::NkvStorage;
 use nkv::notifier::TcpNotifier;
 use nkv::persist_value::FileStorage;
 use nkv::srv::{BaseMsg, GetMsg, PutMsg, Server};
@@ -23,8 +23,7 @@ fn bench_nkv(c: &mut Criterion) {
         b.to_async(&rt).iter(|| async {
             let temp_dir = TempDir::new().unwrap();
             let result =
-                NotifyKeyValue::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf())
-                    .unwrap();
+                NkvStorage::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf()).unwrap();
             black_box(result)
         })
     });
@@ -39,10 +38,9 @@ fn bench_nkv(c: &mut Criterion) {
                 },
                 |input| async {
                     let temp_dir = TempDir::new().unwrap();
-                    let mut nkv = NotifyKeyValue::<FileStorage, TcpNotifier>::new(
-                        temp_dir.path().to_path_buf(),
-                    )
-                    .unwrap();
+                    let mut nkv =
+                        NkvStorage::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf())
+                            .unwrap();
                     let result = nkv.put("key1", input).await;
                     black_box(result)
                 },
@@ -60,10 +58,9 @@ fn bench_nkv(c: &mut Criterion) {
                 },
                 |(data, new_data)| async {
                     let temp_dir = TempDir::new().unwrap();
-                    let mut nkv = NotifyKeyValue::<FileStorage, TcpNotifier>::new(
-                        temp_dir.path().to_path_buf(),
-                    )
-                    .unwrap();
+                    let mut nkv =
+                        NkvStorage::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf())
+                            .unwrap();
                     nkv.put("key1", data).await;
                     let result = nkv.put("key1", new_data).await;
                     black_box(result)
@@ -77,10 +74,9 @@ fn bench_nkv(c: &mut Criterion) {
                 || {
                     let data = vec![0u8; size].into_boxed_slice();
                     let temp_dir = TempDir::new().unwrap();
-                    let mut nkv = NotifyKeyValue::<FileStorage, TcpNotifier>::new(
-                        temp_dir.path().to_path_buf(),
-                    )
-                    .unwrap();
+                    let mut nkv =
+                        NkvStorage::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf())
+                            .unwrap();
                     let rt = Runtime::new().unwrap();
                     rt.block_on(nkv.put("key1", data));
                     nkv
@@ -98,10 +94,9 @@ fn bench_nkv(c: &mut Criterion) {
                 },
                 |data| async {
                     let temp_dir = TempDir::new().unwrap();
-                    let mut nkv = NotifyKeyValue::<FileStorage, TcpNotifier>::new(
-                        temp_dir.path().to_path_buf(),
-                    )
-                    .unwrap();
+                    let mut nkv =
+                        NkvStorage::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf())
+                            .unwrap();
 
                     nkv.put("key1", data).await;
                     let result = nkv.delete("key1").await;
