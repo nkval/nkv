@@ -14,16 +14,17 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::errors::{NotifierError, NotifyKeyValueError};
-use crate::traits::{Notifier, StoragePolicy, Value};
+use crate::notifier::{Notifier, TcpWriter};
+use crate::traits::{StoragePolicy, Value};
 use crate::trie::{Trie, TrieNode};
 use tokio::sync::Mutex;
 
-pub struct NkvStorage<P: StoragePolicy, N: Notifier> {
-    state: Trie<Value<P, N>>,
+pub struct NkvStorage<P: StoragePolicy> {
+    state: Trie<Value<P>>,
     persist_path: PathBuf,
 }
 
-impl<P: StoragePolicy, N: Notifier + std::marker::Send + 'static> NkvStorage<P, N> {
+impl<P: StoragePolicy> NkvStorage<P> {
     pub fn new(path: std::path::PathBuf) -> std::io::Result<Self> {
         let mut res = Self {
             state: Trie::new(),
@@ -47,7 +48,7 @@ impl<P: StoragePolicy, N: Notifier + std::marker::Send + 'static> NkvStorage<P, 
                         let key = fp.to_str().unwrap();
                         let value = Value {
                             pv: P::from_checkpoint(&path)?,
-                            notifier: Arc::new(Mutex::new(N::new())),
+                            notifier: Arc::new(Mutex::new(Notifier::new())),
                         };
 
                         res.state.insert(key, value);
@@ -71,19 +72,19 @@ impl<P: StoragePolicy, N: Notifier + std::marker::Send + 'static> NkvStorage<P, 
     }
 
     pub async fn put(&mut self, key: &str, value: Box<[u8]>) {
-        let vector: Arc<Mutex<Vec<Arc<Mutex<N>>>>> = Arc::new(Mutex::new(Vec::new()));
+        let vector: Arc<Mutex<Vec<Arc<Mutex<Notifier>>>>> = Arc::new(Mutex::new(Vec::new()));
         let vc = Arc::clone(&vector);
 
         let capture_and_push: Option<
             Box<
-                dyn Fn(&mut TrieNode<Value<P, N>>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                dyn Fn(&mut TrieNode<Value<P>>) -> Pin<Box<dyn Future<Output = ()> + Send>>
                     + Send
                     + Sync
                     + 'static,
             >,
         > = Some({
             Box::new(
-                move |trie_ref: &mut TrieNode<Value<P, N>>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                move |trie_ref: &mut TrieNode<Value<P>>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
                     let notifier_arc = match trie_ref.value.as_ref() {
                         Some(value) => Arc::clone(&value.notifier),
                         None => return Box::pin(async {}),
@@ -92,10 +93,6 @@ impl<P: StoragePolicy, N: Notifier + std::marker::Send + 'static> NkvStorage<P, 
                     let vector_clone = Arc::clone(&vc);
 
                     Box::pin(async move {
-                        {
-                            let _notifier = notifier_arc.lock().await;
-                        }
-
                         let mut vector_lock = vector_clone.lock().await;
                         vector_lock.push(notifier_arc);
                     })
@@ -118,7 +115,7 @@ impl<P: StoragePolicy, N: Notifier + std::marker::Send + 'static> NkvStorage<P, 
             let val = Value {
                 // TODO: REMOVE UNWRAP AND ADD PROPER HANDLING
                 pv: P::new(value.clone(), self.persist_path.join(key)).unwrap(),
-                notifier: Arc::new(Mutex::new(N::new())),
+                notifier: Arc::new(Mutex::new(Notifier::new())),
             };
             self.state.insert(key, val);
         }
@@ -142,19 +139,19 @@ impl<P: StoragePolicy, N: Notifier + std::marker::Send + 'static> NkvStorage<P, 
     }
 
     pub async fn delete(&mut self, key: &str) -> Result<(), NotifyKeyValueError> {
-        let vector: Arc<Mutex<Vec<Arc<Mutex<N>>>>> = Arc::new(Mutex::new(Vec::new()));
+        let vector: Arc<Mutex<Vec<Arc<Mutex<Notifier>>>>> = Arc::new(Mutex::new(Vec::new()));
         let vc = Arc::clone(&vector);
 
         let capture_and_push: Option<
             Box<
-                dyn Fn(&mut TrieNode<Value<P, N>>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                dyn Fn(&mut TrieNode<Value<P>>) -> Pin<Box<dyn Future<Output = ()> + Send>>
                     + Send
                     + Sync
                     + 'static,
             >,
         > = Some({
             Box::new(
-                move |trie_ref: &mut TrieNode<Value<P, N>>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                move |trie_ref: &mut TrieNode<Value<P>>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
                     let notifier_arc = match trie_ref.value.as_ref() {
                         Some(value) => Arc::clone(&value.notifier),
                         None => return Box::pin(async {}),
@@ -192,7 +189,7 @@ impl<P: StoragePolicy, N: Notifier + std::marker::Send + 'static> NkvStorage<P, 
         &mut self,
         key: &str,
         uuid: String,
-        stream: N::W,
+        stream: TcpWriter,
     ) -> Result<(), NotifierError> {
         if let Some(val) = self.state.get_mut(key, None).await {
             val.notifier.lock().await.subscribe(uuid, stream).await?;
@@ -200,7 +197,7 @@ impl<P: StoragePolicy, N: Notifier + std::marker::Send + 'static> NkvStorage<P, 
             // Client can subscribe to a non-existent value
             let val = Value {
                 pv: P::new(Box::new([]), self.persist_path.join(key))?,
-                notifier: Arc::new(Mutex::new(N::new())),
+                notifier: Arc::new(Mutex::new(Notifier::new())),
             };
             val.notifier.lock().await.subscribe(uuid, stream).await?;
             self.state.insert(key, val);
@@ -228,7 +225,7 @@ impl<P: StoragePolicy, N: Notifier + std::marker::Send + 'static> NkvStorage<P, 
 
 #[cfg(test)]
 mod tests {
-    use crate::{notifier::TcpNotifier, persist_value::FileStorage};
+    use crate::persist_value::FileStorage;
 
     use super::*;
     use anyhow::Result;
@@ -238,7 +235,7 @@ mod tests {
     #[tokio::test]
     async fn test_put_and_get() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NkvStorage::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data.clone()).await;
@@ -252,7 +249,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_nonexistent_key() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let nkv = NkvStorage::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf())?;
+        let nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let result = nkv.get("nonexistent_key");
         assert_eq!(result, Vec::new());
@@ -263,7 +260,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NkvStorage::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data.clone()).await;
@@ -278,7 +275,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_value() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NkvStorage::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data).await;
@@ -301,13 +298,13 @@ mod tests {
         let data3: Box<[u8]> = Box::new([10, 11, 12, 13, 14]);
 
         {
-            let mut nkv = NkvStorage::<FileStorage, TcpNotifier>::new(path.clone())?;
+            let mut nkv = NkvStorage::<FileStorage>::new(path.clone())?;
             nkv.put("key1", data1.clone()).await;
             nkv.put("key2", data2.clone()).await;
             nkv.put("key3", data3.clone()).await;
         }
 
-        let nkv = NkvStorage::<FileStorage, TcpNotifier>::new(temp_dir.path().to_path_buf())?;
+        let nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
         let result = nkv.get("key1");
         assert_eq!(result, vec!(Arc::from(data1)));
 

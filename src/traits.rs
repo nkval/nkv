@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::errors::NotifierError;
-use async_trait::async_trait;
+use crate::notifier::Notifier;
 use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,25 +19,8 @@ pub trait StoragePolicy: PartialEq {
     fn data(&self) -> Arc<[u8]>;
 }
 
-#[async_trait]
-pub trait Notifier {
-    type W;
-
-    fn new() -> Self
-    where
-        Self: Sized;
-
-    async fn subscribe(&self, uuid: String, stream: Self::W) -> Result<(), NotifierError>;
-    async fn unsubscribe(&self, key: String, uuid: String) -> Result<(), NotifierError>;
-    async fn unsubscribe_all(&self, key: &str) -> Result<(), NotifierError>;
-
-    async fn send_hello(&mut self);
-    async fn send_update(&mut self, key: String, new_value: Box<[u8]>);
-    async fn send_close(&mut self, key: String);
-}
-
 #[derive(Debug)]
-pub struct Value<V: StoragePolicy, N: Notifier> {
+pub struct Value<V: StoragePolicy> {
     pub pv: V,
-    pub notifier: Arc<Mutex<N>>,
+    pub notifier: Arc<Mutex<Notifier>>,
 }

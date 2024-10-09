@@ -18,11 +18,9 @@ extern crate serde;
 extern crate serde_json;
 
 use crate::errors::NotifierError;
-use crate::traits::Notifier;
 use crate::BaseMessage;
 use crate::ServerRequest;
 
-use async_trait::async_trait;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::to_vec;
@@ -87,7 +85,7 @@ impl<T> StateBuf<T> {
 pub type TcpWriter = BufWriter<tokio::io::WriteHalf<tokio::net::TcpStream>>;
 
 #[derive(Debug)]
-pub struct TcpNotifier {
+pub struct Notifier {
     clients: Arc<Mutex<HashMap<String, TcpWriter>>>,
     // use a buffer to guarantee latest state on consumers
     // for detailed information see DESIGN_DECISIONS.md
@@ -95,7 +93,7 @@ pub struct TcpNotifier {
     notifier: watch::Sender<bool>,
 }
 
-impl TcpNotifier {
+impl Notifier {
     async fn send_notifications(
         clients: Arc<Mutex<HashMap<String, TcpWriter>>>,
         msg_buf: Arc<Mutex<StateBuf<Message>>>,
@@ -163,13 +161,8 @@ impl TcpNotifier {
             }
         }
     }
-}
 
-#[async_trait]
-impl Notifier for TcpNotifier {
-    type W = TcpWriter;
-
-    fn new() -> Self {
+    pub fn new() -> Self {
         let clients = Arc::new(Mutex::new(HashMap::new()));
         let msg_buf = Arc::new(Mutex::new(StateBuf::new()));
         let (tx, mut rx) = watch::channel(false);
@@ -197,7 +190,7 @@ impl Notifier for TcpNotifier {
         res
     }
 
-    async fn subscribe(&self, uuid: String, stream: Self::W) -> Result<(), NotifierError> {
+    pub async fn subscribe(&self, uuid: String, stream: TcpWriter) -> Result<(), NotifierError> {
         let mut subscribers = self.clients.lock().await;
         subscribers.insert(uuid.clone(), stream);
         match subscribers.get_mut(&uuid) {
@@ -206,12 +199,12 @@ impl Notifier for TcpNotifier {
         }
     }
 
-    async fn unsubscribe(&self, key: String, uuid: String) -> Result<(), NotifierError> {
+    pub async fn unsubscribe(&self, key: String, uuid: String) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
         Self::unsubscribe_impl(key, &mut clients, uuid).await
     }
 
-    async fn unsubscribe_all(&self, key: &str) -> Result<(), NotifierError> {
+    pub async fn unsubscribe_all(&self, key: &str) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
 
         for (_, mut stream) in clients.drain() {
@@ -228,12 +221,12 @@ impl Notifier for TcpNotifier {
         Ok(())
     }
 
-    async fn send_hello(&mut self) {
+    pub async fn send_hello(&mut self) {
         self.msg_buf.lock().await.store(Message::Hello);
         let _ = self.notifier.send(true);
     }
 
-    async fn send_update(&mut self, key: String, new_value: Box<[u8]>) {
+    pub async fn send_update(&mut self, key: String, new_value: Box<[u8]>) {
         self.msg_buf.lock().await.store(Message::Update {
             key,
             value: new_value,
@@ -241,7 +234,7 @@ impl Notifier for TcpNotifier {
         let _ = self.notifier.send(true);
     }
 
-    async fn send_close(&mut self, key: String) {
+    pub async fn send_close(&mut self, key: String) {
         self.msg_buf.lock().await.store(Message::Close { key });
         let _ = self.notifier.send(true);
     }
@@ -332,7 +325,7 @@ mod tests {
         let key = "AWESOME_KEY".to_string();
         let uuid = "AWESOME_UUID".to_string();
 
-        let mut notifier = TcpNotifier::new();
+        let mut notifier = Notifier::new();
         let (mut subscriber, mut rx) = Subscriber::new(srv_addr.to_string().as_str(), &key, &uuid);
         let listener = TcpListener::bind(srv_addr).await.unwrap();
         let val: Box<[u8]> = "Bazinga".to_string().into_bytes().into_boxed_slice();
