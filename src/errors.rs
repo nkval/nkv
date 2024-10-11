@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use crate::nkv::NotificationError;
+
 #[derive(Debug)]
 pub enum NotifierError {
     FailedToWriteMessage(tokio::io::Error),
@@ -35,7 +37,7 @@ impl std::error::Error for NotifierError {
 pub enum NotifyKeyValueError {
     NoError,
     NotFound,
-    NotifierError(NotifierError),
+    NotificationError(NotificationError),
     IoError(std::io::Error),
 }
 
@@ -44,7 +46,7 @@ impl NotifyKeyValueError {
         match self {
             NotifyKeyValueError::NotFound => http::StatusCode::NOT_FOUND,
             NotifyKeyValueError::NoError => http::StatusCode::OK,
-            NotifyKeyValueError::NotifierError(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
+            NotifyKeyValueError::NotificationError(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
             NotifyKeyValueError::IoError(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -56,9 +58,9 @@ impl From<std::io::Error> for NotifierError {
     }
 }
 
-impl From<NotifierError> for NotifyKeyValueError {
-    fn from(error: NotifierError) -> Self {
-        NotifyKeyValueError::NotifierError(error)
+impl From<NotificationError> for NotifyKeyValueError {
+    fn from(error: NotificationError) -> Self {
+        NotifyKeyValueError::NotificationError(error)
     }
 }
 
@@ -73,7 +75,7 @@ impl fmt::Display for NotifyKeyValueError {
         match self {
             NotifyKeyValueError::NotFound => write!(f, "Not Found"),
             NotifyKeyValueError::NoError => write!(f, "No Error"),
-            NotifyKeyValueError::NotifierError(e) => write!(f, "Notifier error {}", e),
+            NotifyKeyValueError::NotificationError(e) => write!(f, "Notification error {}", e),
             NotifyKeyValueError::IoError(e) => write!(f, "IO error {}", e),
         }
     }
@@ -84,7 +86,7 @@ impl std::error::Error for NotifyKeyValueError {
         match self {
             NotifyKeyValueError::NoError => None,
             NotifyKeyValueError::NotFound => None,
-            NotifyKeyValueError::NotifierError(e) => Some(e),
+            NotifyKeyValueError::NotificationError(e) => Some(e),
             NotifyKeyValueError::IoError(e) => Some(e),
         }
     }

@@ -13,7 +13,8 @@ pub mod srv;
 pub mod traits;
 pub mod trie;
 
-use crate::notifier::{Message, Subscriber};
+use crate::nkv::Message;
+use crate::notifier::Subscriber;
 use crate::request_msg::*;
 
 use std::collections::HashMap;

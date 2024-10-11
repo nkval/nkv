@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::notifier::Notifier;
-use std::fmt::Debug;
+use crate::nkv::Notification;
+// use std::fmt::{self, Debug, Error};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -22,5 +22,5 @@ pub trait StoragePolicy: PartialEq {
 #[derive(Debug)]
 pub struct Value<V: StoragePolicy> {
     pub pv: V,
-    pub notifier: Arc<Mutex<Notifier>>,
+    pub notifier: Arc<Mutex<Notification>>,
 }

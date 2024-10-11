@@ -6,18 +6,130 @@
 // load values from folder. Underlying structure is a HashMap
 // and designed to be access synchronously.
 
-use std::fs;
-use std::future::Future;
-use std::io;
+use std::collections::HashMap;
+use std::fmt::{self, Debug};
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::{fs, future::Future, io};
 
-use crate::errors::{NotifierError, NotifyKeyValueError};
-use crate::notifier::{Notifier, TcpWriter};
+use crate::errors::NotifyKeyValueError;
 use crate::traits::{StoragePolicy, Value};
 use crate::trie::{Trie, TrieNode};
-use tokio::sync::Mutex;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, Mutex};
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub enum Message {
+    Hello,
+    Update { key: String, value: Box<[u8]> },
+    Close { key: String },
+    NotFound,
+}
+
+impl fmt::Display for Message {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Self::Hello => write!(f, "Hello")?,
+            Self::Update { key, value } => match String::from_utf8(value.to_vec()) {
+                Ok(string) => write!(f, " - {} : {}\n", key, string)?,
+                Err(_) => write!(f, " - {} : {:?}\n", key, value)?,
+            },
+            Self::Close { key } => write!(f, "{}: Close", key)?,
+            Self::NotFound => write!(f, "Not Found")?,
+        }
+        Ok(())
+    }
+}
+#[derive(Debug)]
+pub enum NotificationError {
+    AlreadySubscribed(String),
+    SendError(String),
+}
+
+impl fmt::Display for NotificationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NotificationError::AlreadySubscribed(s) => write!(f, "Already subscribed {}", s),
+            NotificationError::SendError(s) => write!(f, "Failed to send {}", s),
+        }
+    }
+}
+impl std::error::Error for NotificationError {}
+
+impl<T> From<mpsc::error::SendError<T>> for NotificationError {
+    fn from(_: mpsc::error::SendError<T>) -> Self {
+        NotificationError::SendError("Failed to send message".to_string())
+    }
+}
+
+#[derive(Debug)]
+pub struct Notification {
+    subscriptions: HashMap<String, mpsc::UnboundedSender<Message>>,
+}
+
+impl Notification {
+    pub fn new() -> Self {
+        Self {
+            subscriptions: HashMap::new(),
+        }
+    }
+
+    pub fn subscribe(
+        &mut self,
+        uuid: String,
+    ) -> Result<mpsc::UnboundedReceiver<Message>, NotificationError> {
+        if self.subscriptions.contains_key(&uuid) {
+            return Err(NotificationError::AlreadySubscribed(uuid));
+        }
+        let (tx, rx) = mpsc::unbounded_channel::<Message>();
+        self.subscriptions.insert(uuid, tx.clone());
+        tx.send(Message::Hello)?;
+        Ok(rx)
+    }
+
+    pub fn unsubscribe(&mut self, key: String, uuid: &str) -> Result<(), NotificationError> {
+        if let Some(tx) = self.subscriptions.remove(uuid) {
+            tx.send(Message::Close {
+                key: key.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn unsubscribe_all(&mut self, key: &str) -> Result<(), NotificationError> {
+        for (_, tx) in self.subscriptions.drain() {
+            tx.send(Message::Close {
+                key: key.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn send_hello(&self) -> Result<(), NotificationError> {
+        for (_, tx) in &self.subscriptions {
+            tx.send(Message::Hello)?;
+        }
+        Ok(())
+    }
+
+    pub fn send_update(&self, key: String, value: Box<[u8]>) -> Result<(), NotificationError> {
+        for (_, tx) in &self.subscriptions {
+            tx.send(Message::Update {
+                key: key.clone(),
+                value: value.clone(),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn send_close(&self, key: String) -> Result<(), NotificationError> {
+        for (_, tx) in &self.subscriptions {
+            tx.send(Message::Close { key: key.clone() })?;
+        }
+        Ok(())
+    }
+}
 
 pub struct NkvStorage<P: StoragePolicy> {
     state: Trie<Value<P>>,
@@ -48,7 +160,7 @@ impl<P: StoragePolicy> NkvStorage<P> {
                         let key = fp.to_str().unwrap();
                         let value = Value {
                             pv: P::from_checkpoint(&path)?,
-                            notifier: Arc::new(Mutex::new(Notifier::new())),
+                            notifier: Arc::new(Mutex::new(Notification::new())),
                         };
 
                         res.state.insert(key, value);
@@ -71,8 +183,8 @@ impl<P: StoragePolicy> NkvStorage<P> {
         Ok(res)
     }
 
-    pub async fn put(&mut self, key: &str, value: Box<[u8]>) {
-        let vector: Arc<Mutex<Vec<Arc<Mutex<Notifier>>>>> = Arc::new(Mutex::new(Vec::new()));
+    pub async fn put(&mut self, key: &str, value: Box<[u8]>) -> Result<(), NotifyKeyValueError> {
+        let vector: Arc<Mutex<Vec<Arc<Mutex<Notification>>>>> = Arc::new(Mutex::new(Vec::new()));
         let vc = Arc::clone(&vector);
 
         let capture_and_push: Option<
@@ -109,13 +221,12 @@ impl<P: StoragePolicy> NkvStorage<P> {
                 .notifier
                 .lock()
                 .await
-                .send_update(key.to_string(), value.clone())
-                .await;
+                .send_update(key.to_string(), value.clone());
         } else {
             let val = Value {
                 // TODO: REMOVE UNWRAP AND ADD PROPER HANDLING
                 pv: P::new(value.clone(), self.persist_path.join(key)).unwrap(),
-                notifier: Arc::new(Mutex::new(Notifier::new())),
+                notifier: Arc::new(Mutex::new(Notification::new())),
             };
             self.state.insert(key, val);
         }
@@ -125,9 +236,10 @@ impl<P: StoragePolicy> NkvStorage<P> {
             notifier_arc
                 .lock()
                 .await
-                .send_update(key.to_string(), value.clone())
-                .await;
+                .send_update(key.to_string(), value.clone())?;
         }
+
+        Ok(())
     }
 
     pub fn get(&self, key: &str) -> Vec<Arc<[u8]>> {
@@ -139,7 +251,7 @@ impl<P: StoragePolicy> NkvStorage<P> {
     }
 
     pub async fn delete(&mut self, key: &str) -> Result<(), NotifyKeyValueError> {
-        let vector: Arc<Mutex<Vec<Arc<Mutex<Notifier>>>>> = Arc::new(Mutex::new(Vec::new()));
+        let vector: Arc<Mutex<Vec<Arc<Mutex<Notification>>>>> = Arc::new(Mutex::new(Vec::new()));
         let vc = Arc::clone(&vector);
 
         let capture_and_push: Option<
@@ -175,10 +287,10 @@ impl<P: StoragePolicy> NkvStorage<P> {
             {
                 let vec_lock = vector.lock().await;
                 for n_arc in vec_lock.iter() {
-                    n_arc.lock().await.send_close(key.to_string()).await;
+                    n_arc.lock().await.send_close(key.to_string())?;
                 }
             }
-            val.notifier.lock().await.unsubscribe_all(key).await?;
+            val.notifier.lock().await.unsubscribe_all(key)?;
             val.pv.delete_checkpoint()?;
         }
         self.state.remove(key);
@@ -189,20 +301,19 @@ impl<P: StoragePolicy> NkvStorage<P> {
         &mut self,
         key: &str,
         uuid: String,
-        stream: TcpWriter,
-    ) -> Result<(), NotifierError> {
+    ) -> Result<mpsc::UnboundedReceiver<Message>, NotifyKeyValueError> {
         if let Some(val) = self.state.get_mut(key, None).await {
-            val.notifier.lock().await.subscribe(uuid, stream).await?;
+            return Ok(val.notifier.lock().await.subscribe(uuid)?);
         } else {
             // Client can subscribe to a non-existent value
             let val = Value {
                 pv: P::new(Box::new([]), self.persist_path.join(key))?,
-                notifier: Arc::new(Mutex::new(Notifier::new())),
+                notifier: Arc::new(Mutex::new(Notification::new())),
             };
-            val.notifier.lock().await.subscribe(uuid, stream).await?;
+            let tx = val.notifier.lock().await.subscribe(uuid)?;
             self.state.insert(key, val);
+            return Ok(tx);
         }
-        Ok(())
     }
 
     pub async fn unsubscribe(
@@ -214,8 +325,7 @@ impl<P: StoragePolicy> NkvStorage<P> {
             val.notifier
                 .lock()
                 .await
-                .unsubscribe(key.to_string(), uuid)
-                .await?;
+                .unsubscribe(key.to_string(), &uuid)?;
             Ok(())
         } else {
             Err(NotifyKeyValueError::NotFound)
@@ -238,7 +348,7 @@ mod tests {
         let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
-        nkv.put("key1", data.clone()).await;
+        nkv.put("key1", data.clone()).await?;
 
         let result = nkv.get("key1");
         assert_eq!(result, vec!(Arc::from(data)));
@@ -263,7 +373,7 @@ mod tests {
         let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
-        nkv.put("key1", data.clone()).await;
+        nkv.put("key1", data.clone()).await?;
 
         nkv.delete("key1").await?;
         let result = nkv.get("key1");
@@ -278,10 +388,10 @@ mod tests {
         let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
-        nkv.put("key1", data).await;
+        nkv.put("key1", data).await?;
 
         let new_data: Box<[u8]> = Box::new([5, 6, 7, 8, 9]);
-        nkv.put("key1", new_data.clone()).await;
+        nkv.put("key1", new_data.clone()).await?;
 
         let result = nkv.get("key1");
         assert_eq!(result, vec!(Arc::from(new_data)));
@@ -299,9 +409,9 @@ mod tests {
 
         {
             let mut nkv = NkvStorage::<FileStorage>::new(path.clone())?;
-            nkv.put("key1", data1.clone()).await;
-            nkv.put("key2", data2.clone()).await;
-            nkv.put("key3", data3.clone()).await;
+            nkv.put("key1", data1.clone()).await?;
+            nkv.put("key2", data2.clone()).await?;
+            nkv.put("key3", data3.clone()).await?;
         }
 
         let nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
@@ -313,6 +423,119 @@ mod tests {
 
         let result = nkv.get("key3");
         assert_eq!(result, vec!(Arc::from(data3)));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_subsribe() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
+
+        let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
+        nkv.put("key1", data).await?;
+
+        let mut rx = nkv.subscribe("key1", "uuid1".to_string()).await?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(msg, Message::Hello)
+        } else {
+            panic!("Should recieve msg");
+        }
+
+        let new_data: Box<[u8]> = Box::new([5, 6, 7, 8, 9]);
+        nkv.put("key1", new_data.clone()).await?;
+
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg,
+                Message::Update {
+                    key: "key1".to_string(),
+                    value: new_data.clone()
+                }
+            )
+        } else {
+            panic!("Should recieve msg");
+        }
+
+        let result = nkv.get("key1");
+        assert_eq!(result, vec!(Arc::from(new_data)));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_unsubsribe() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
+
+        let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
+        nkv.put("key1", data).await?;
+
+        let mut rx = nkv.subscribe("key1", "uuid1".to_string()).await?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(msg, Message::Hello)
+        } else {
+            panic!("Should recieve msg");
+        }
+        nkv.unsubscribe("key1", "uuid1".to_string()).await?;
+
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg,
+                Message::Close {
+                    key: "key1".to_string()
+                }
+            )
+        } else {
+            panic!("Should recieve msg");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_notification() -> Result<()> {
+        let mut n = Notification::new();
+
+        let mut rx = n.subscribe("uuid1".to_string())?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(msg, Message::Hello)
+        } else {
+            panic!("Should recieve msg");
+        }
+
+        n.send_hello()?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(msg, Message::Hello)
+        } else {
+            panic!("Should recieve msg");
+        }
+
+        let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
+        n.send_update("key1".to_string(), data.clone())?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg,
+                Message::Update {
+                    key: "key1".to_string(),
+                    value: data.clone()
+                }
+            )
+        } else {
+            panic!("Should recieve msg");
+        }
+
+        n.send_close("key1".to_string())?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg,
+                Message::Close {
+                    key: "key1".to_string(),
+                }
+            )
+        } else {
+            panic!("Should recieve msg");
+        }
 
         Ok(())
     }

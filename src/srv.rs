@@ -6,6 +6,7 @@
 // format you can check request_msg.rs
 
 use http::StatusCode;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -14,7 +15,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::errors::NotifyKeyValueError;
 use crate::nkv::NkvStorage;
-use crate::notifier::TcpWriter;
+use crate::notifier::{Notifier, TcpWriter};
 use crate::persist_value::FileStorage;
 use crate::request_msg::{self, BaseMessage, PutMessage, ServerRequest, ServerResponse};
 
@@ -83,6 +84,7 @@ impl Server {
             unsub_tx,
             cancel_rx,
         };
+        let mut notifiers: HashMap<String, Notifier> = HashMap::new();
 
         // Spawn task to handle Asynchronous access to notify key value
         // storage via channels
@@ -90,8 +92,11 @@ impl Server {
             loop {
                 tokio::select! {
                     Some(req) = put_rx.recv() => {
-                        nkv.put(&req.key, req.value).await;
-                        let _ = req.resp_tx.send(NotifyKeyValueError::NoError).await;
+                        let err = match nkv.put(&req.key, req.value).await {
+                            Ok(_) => NotifyKeyValueError::NoError,
+                            Err(e) => e,
+                        };
+                        let _ = req.resp_tx.send(err).await;
                     }
                     Some(req) = get_rx.recv() => {
                         let vals = nkv.get(&req.key);
@@ -116,9 +121,17 @@ impl Server {
                    }
                    Some(req) = sub_rx.recv() => {
                        let mut err = NotifyKeyValueError::NoError;
-                       match nkv.subscribe(&req.key, req.uuid, req.writer).await {
-                           Err(e) => { err = NotifyKeyValueError::NotifierError(e) }
-                           Ok(_) => {}
+                       if let Some(n) = notifiers.get_mut(&req.key) {
+                           n.subscribe(req.uuid, req.writer).await;
+                       } else {
+                           match nkv.subscribe(&req.key, req.uuid.clone()).await {
+                               Err(e) => { err = e }
+                               Ok(rx) => {
+                                   let n = Notifier::new(rx);
+                                   n.subscribe(req.uuid, req.writer).await;
+                                   notifiers.insert(req.key, n);
+                               }
+                           }
                        }
                        let _ = req.resp_tx.send(err).await;
                    }
@@ -413,7 +426,7 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::notifier::Message;
+    use crate::nkv::Message;
     use crate::NkvClient;
     use tempfile::TempDir;
     use tokio::{self, net::TcpStream};

@@ -1,7 +1,7 @@
 use std::env;
 use std::io::{self, Write};
 
-use nkv::notifier::Message;
+use nkv::nkv::Message;
 use nkv::NkvClient;
 use std::time::Instant;
 
