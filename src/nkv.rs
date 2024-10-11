@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::{fs, future::Future, io};
 
 use crate::errors::NotifyKeyValueError;
-use crate::traits::{StoragePolicy, Value};
+use crate::traits::{StorageEngine, Value};
 use crate::trie::{Trie, TrieNode};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex};
@@ -131,12 +131,12 @@ impl Notification {
     }
 }
 
-pub struct NkvStorage<P: StoragePolicy> {
+pub struct NkvCore<P: StorageEngine> {
     state: Trie<Value<P>>,
     persist_path: PathBuf,
 }
 
-impl<P: StoragePolicy> NkvStorage<P> {
+impl<P: StorageEngine> NkvCore<P> {
     pub fn new(path: std::path::PathBuf) -> std::io::Result<Self> {
         let mut res = Self {
             state: Trie::new(),
@@ -345,7 +345,7 @@ mod tests {
     #[tokio::test]
     async fn test_put_and_get() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data.clone()).await?;
@@ -359,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_nonexistent_key() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
+        let nkv = NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let result = nkv.get("nonexistent_key");
         assert_eq!(result, Vec::new());
@@ -370,7 +370,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data.clone()).await?;
@@ -385,7 +385,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_value() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data).await?;
@@ -408,13 +408,13 @@ mod tests {
         let data3: Box<[u8]> = Box::new([10, 11, 12, 13, 14]);
 
         {
-            let mut nkv = NkvStorage::<FileStorage>::new(path.clone())?;
+            let mut nkv = NkvCore::<FileStorage>::new(path.clone())?;
             nkv.put("key1", data1.clone()).await?;
             nkv.put("key2", data2.clone()).await?;
             nkv.put("key3", data3.clone()).await?;
         }
 
-        let nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
+        let nkv = NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf())?;
         let result = nkv.get("key1");
         assert_eq!(result, vec!(Arc::from(data1)));
 
@@ -430,7 +430,7 @@ mod tests {
     #[tokio::test]
     async fn test_subsribe() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data).await?;
@@ -466,7 +466,7 @@ mod tests {
     #[tokio::test]
     async fn test_unsubsribe() -> Result<()> {
         let temp_dir = TempDir::new()?;
-        let mut nkv = NkvStorage::<FileStorage>::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf())?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
         nkv.put("key1", data).await?;

@@ -14,7 +14,7 @@ use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::errors::NotifyKeyValueError;
-use crate::nkv::NkvStorage;
+use crate::nkv::NkvCore;
 use crate::notifier::{Notifier, TcpWriter};
 use crate::persist_value::FileStorage;
 use crate::request_msg::{self, BaseMessage, PutMessage, ServerRequest, ServerResponse};
@@ -72,7 +72,7 @@ impl Server {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (usr_cancel_tx, mut usr_cancel_rx) = oneshot::channel();
 
-        let mut nkv = NkvStorage::<FileStorage>::new(path)?;
+        let mut nkv = NkvCore::<FileStorage>::new(path)?;
         let addr: SocketAddr = addr.parse().expect("Unable to parse addr");
 
         let srv = Self {

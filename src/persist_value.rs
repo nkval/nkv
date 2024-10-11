@@ -4,7 +4,7 @@
 // on a file system. Writing to a disk is an
 // atomic operation
 
-use crate::traits::StoragePolicy;
+use crate::traits::StorageEngine;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ pub struct FileStorage {
     fp: PathBuf,
 }
 
-impl StoragePolicy for FileStorage {
+impl StorageEngine for FileStorage {
     fn new(new_data: Box<[u8]>, filepath: PathBuf) -> std::io::Result<Self> {
         atomic_write(&*new_data, &filepath)?;
 

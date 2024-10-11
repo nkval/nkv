@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-pub trait StoragePolicy: PartialEq {
+pub trait StorageEngine: PartialEq {
     fn new(data: Box<[u8]>, filepath: PathBuf) -> std::io::Result<Self>
     where
         Self: Sized;
@@ -20,7 +20,7 @@ pub trait StoragePolicy: PartialEq {
 }
 
 #[derive(Debug)]
-pub struct Value<V: StoragePolicy> {
+pub struct Value<V: StorageEngine> {
     pub pv: V,
     pub notifier: Arc<Mutex<Notification>>,
 }
