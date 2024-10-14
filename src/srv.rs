@@ -72,7 +72,8 @@ impl Server {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (usr_cancel_tx, mut usr_cancel_rx) = oneshot::channel();
 
-        let mut nkv = NkvCore::<FileStorage>::new(path)?;
+        let storage = FileStorage::new(path)?;
+        let mut nkv = NkvCore::new(storage)?;
         let addr: SocketAddr = addr.parse().expect("Unable to parse addr");
 
         let srv = Self {

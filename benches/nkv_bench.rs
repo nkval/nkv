@@ -21,7 +21,8 @@ fn bench_nkv(c: &mut Criterion) {
     group.bench_function(format!("nkv_new"), |b| {
         b.to_async(&rt).iter(|| async {
             let temp_dir = TempDir::new().unwrap();
-            let result = NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf()).unwrap();
+            let storage = FileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+            let result = NkvCore::new(storage).unwrap();
             black_box(result)
         })
     });
@@ -36,8 +37,8 @@ fn bench_nkv(c: &mut Criterion) {
                 },
                 |input| async {
                     let temp_dir = TempDir::new().unwrap();
-                    let mut nkv =
-                        NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf()).unwrap();
+                    let storage = FileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+                    let mut nkv = NkvCore::new(storage).unwrap();
                     let result = nkv.put("key1", input).await;
                     black_box(result)
                 },
@@ -55,8 +56,8 @@ fn bench_nkv(c: &mut Criterion) {
                 },
                 |(data, new_data)| async {
                     let temp_dir = TempDir::new().unwrap();
-                    let mut nkv =
-                        NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf()).unwrap();
+                    let storage = FileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+                    let mut nkv = NkvCore::new(storage).unwrap();
                     nkv.put("key1", data).await;
                     let result = nkv.put("key1", new_data).await;
                     black_box(result)
@@ -70,8 +71,8 @@ fn bench_nkv(c: &mut Criterion) {
                 || {
                     let data = vec![0u8; size].into_boxed_slice();
                     let temp_dir = TempDir::new().unwrap();
-                    let mut nkv =
-                        NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf()).unwrap();
+                    let storage = FileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+                    let mut nkv = NkvCore::new(storage).unwrap();
                     let rt = Runtime::new().unwrap();
                     rt.block_on(nkv.put("key1", data));
                     nkv
@@ -89,8 +90,8 @@ fn bench_nkv(c: &mut Criterion) {
                 },
                 |data| async {
                     let temp_dir = TempDir::new().unwrap();
-                    let mut nkv =
-                        NkvCore::<FileStorage>::new(temp_dir.path().to_path_buf()).unwrap();
+                    let storage = FileStorage::new(temp_dir.path().to_path_buf()).unwrap();
+                    let mut nkv = NkvCore::new(storage).unwrap();
 
                     nkv.put("key1", data).await;
                     let result = nkv.delete("key1").await;
