@@ -19,6 +19,13 @@ pub struct FileStorage {
 
 impl StorageEngine for FileStorage {
     fn new(new_data: Box<[u8]>, filepath: PathBuf) -> std::io::Result<Self> {
+        // Create parent folders if they don't exist
+        if let Some(parent_dir) = filepath.parent() {
+            if !parent_dir.exists() {
+                fs::create_dir_all(parent_dir)?;
+            }
+        }
+
         atomic_write(&*new_data, &filepath)?;
 
         Ok(Self {
