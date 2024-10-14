@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::collections::HashMap;
-use std::fmt;
+use std::fmt::{self, Display};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -36,6 +36,19 @@ impl<T> TrieNode<T> {
 
     fn is_empty(&self) -> bool {
         self.children.is_empty() && self.value.is_none()
+    }
+
+    fn fmt_with_indent(&self, f: &mut fmt::Formatter<'_>, key: &str, level: usize) -> fmt::Result {
+        if level > 0 {
+            write!(f, "{:-<indent$}|", "", indent = (level - 1) * 2)?;
+        }
+        write!(f, "{:-<indent$}--> {}\n", "", key, indent = level * 2)?;
+
+        for (k, v) in &self.children {
+            v.fmt_with_indent(f, k, level + 1)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -151,6 +164,12 @@ impl<T> Trie<T> {
             result.extend(self.collect_values(child));
         }
         result
+    }
+}
+
+impl<T> Display for Trie<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.root.fmt_with_indent(f, "*", 0)
     }
 }
 
