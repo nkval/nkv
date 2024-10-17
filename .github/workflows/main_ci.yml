@@ -25,14 +25,24 @@ jobs:
     needs: build-and-test
    
     steps:
-      - name: Checkout code
+    steps:
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Log in to GitHub Packages Docker registry
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
 
-      - name: Build Docker image
-        run: docker build -t ghcr.io/${{ github.repository }}:latest .
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push Docker image
-        run: docker push ghcr.io/${{ github.repository }}:latest
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: |
+            ghcr.io/uncleDecart/nkv-nightly:latest
+            ghcr.io/uncleDecart/nkv-nightly:${{ github.sha }}
