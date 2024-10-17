@@ -22,7 +22,7 @@ jobs:
 
   publish-nighltly:
     runs-on: ubuntu-latest
-    needs: bulid-and-test
+    needs: build-and-test
    
     steps:
       - name: Checkout code
