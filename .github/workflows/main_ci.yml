@@ -44,5 +44,5 @@ jobs:
         with:
           push: true
           tags: |
-            ghcr.io/uncleDecart/nkvn:latest
-            ghcr.io/uncleDecart/nkvn:${{ github.sha }}
+            ghcr.io/uncledecart/nkvn:latest
+            ghcr.io/uncledecart/nkvn:${{ github.sha }}
