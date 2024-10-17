@@ -19,3 +19,20 @@ jobs:
 
       - name: build and test
         uses: ./.github/actions/build-and-test
+
+  publish-nighltly:
+    runs-on: ubuntu-latest
+    needs: bulid-and-test
+   
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Packages Docker registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build Docker image
+        run: docker build -t ghcr.io/${{ github.repository_owner }}/nkv-nightly:latest .
+
+      - name: Push Docker image
+        run: docker push ghcr.io/${{ github.repository_owner }}/nkv-nightly:latest
