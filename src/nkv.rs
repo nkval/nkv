@@ -13,33 +13,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::errors::NotifyKeyValueError;
+use crate::request_msg::Message;
 use crate::traits::StorageEngine;
 use crate::trie::{Trie, TrieNode};
-use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, Mutex};
 
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub enum Message {
-    Hello,
-    Update { key: String, value: Box<[u8]> },
-    Close { key: String },
-    NotFound,
-}
-
-impl fmt::Display for Message {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            Self::Hello => write!(f, "Hello")?,
-            Self::Update { key, value } => match String::from_utf8(value.to_vec()) {
-                Ok(string) => write!(f, " - {} : {}\n", key, string)?,
-                Err(_) => write!(f, " - {} : {:?}\n", key, value)?,
-            },
-            Self::Close { key } => write!(f, "{}: Close", key)?,
-            Self::NotFound => write!(f, "Not Found")?,
-        }
-        Ok(())
-    }
-}
 #[derive(Debug)]
 pub enum NotificationError {
     AlreadySubscribed(String),

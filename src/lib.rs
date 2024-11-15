@@ -13,14 +13,16 @@ pub mod srv;
 pub mod traits;
 pub mod trie;
 
-use crate::nkv::Message;
 use crate::notifier::Subscriber;
+use crate::request_msg::Message;
 use crate::request_msg::*;
 
 use std::collections::HashMap;
 use std::fmt;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use std::str;
 use tokio::net::TcpStream;
+// use tokio_util::codec::{Framed, LengthDelimitedCodec};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -40,8 +42,8 @@ impl std::error::Error for NkvClientError {}
 
 pub struct NkvClient {
     addr: String,
-    uuid: String,
-    subscriptions: HashMap<String, bool>,
+    client_uuid: String,
+    subscriptions: HashMap<String, String>,
 }
 
 pub trait Subscription {
@@ -49,10 +51,15 @@ pub trait Subscription {
 }
 
 impl NkvClient {
+    // When you see this UUID returned by client it means request
+    // was not sent to server, for example when you try to
+    // unsubscribe from non-existent subscription
+    const LOCAL_UUID: &'static str = "0";
+
     pub fn new(addr: &str) -> Self {
         Self {
             addr: addr.to_string(),
-            uuid: Self::uuid(),
+            client_uuid: Self::uuid(),
             subscriptions: HashMap::new(),
         }
     }
@@ -64,7 +71,7 @@ impl NkvClient {
     pub async fn get(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
         let req = ServerRequest::Get(BaseMessage {
             id: Self::uuid(),
-            client_uuid: self.uuid.clone(),
+            client_uuid: self.client_uuid.clone(),
             key,
         });
         self.send_request(&req).await
@@ -74,7 +81,7 @@ impl NkvClient {
         let req = ServerRequest::Put(PutMessage {
             base: BaseMessage {
                 id: Self::uuid(),
-                client_uuid: self.uuid.clone(),
+                client_uuid: self.client_uuid.clone(),
                 key,
             },
             value: val,
@@ -85,19 +92,26 @@ impl NkvClient {
     pub async fn delete(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
         let req = ServerRequest::Delete(BaseMessage {
             id: Self::uuid(),
-            client_uuid: self.uuid.clone(),
+            client_uuid: self.client_uuid.clone(),
             key,
         });
         self.send_request(&req).await
     }
 
     pub async fn unsubscribe(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
-        let req = ServerRequest::Unsubscribe(BaseMessage {
-            id: Self::uuid(),
-            client_uuid: self.uuid.clone(),
-            key,
-        });
-        self.send_request(&req).await
+        if let Some(req_id) = self.subscriptions.get(&key) {
+            let req = ServerRequest::Unsubscribe(BaseMessage {
+                id: req_id.to_string(),
+                client_uuid: self.client_uuid.clone(),
+                key,
+            });
+            self.send_request(&req).await
+        } else {
+            return Ok(ServerResponse::Base(BaseResp {
+                id: Self::LOCAL_UUID.to_string(),
+                status: false,
+            }));
+        }
     }
 
     pub async fn subscribe(
@@ -106,15 +120,14 @@ impl NkvClient {
         hdlr: Box<dyn Fn(Message) + Send>,
     ) -> tokio::io::Result<ServerResponse> {
         // we subscribe only once during client lifetime
-        if self.subscriptions.contains_key(&key) {
+        if let Some(req_id) = self.subscriptions.get(&key) {
             return Ok(ServerResponse::Base(BaseResp {
-                id: Self::uuid(),
-                status: http::StatusCode::FOUND,
-                message: "Already Subscribed".to_string(),
+                id: req_id.to_string(),
+                status: false,
             }));
         }
 
-        let (mut subscriber, mut rx) = Subscriber::new(&self.addr, &key, &self.uuid);
+        let (mut subscriber, mut rx) = Subscriber::new(&self.addr, &key, &self.client_uuid);
 
         tokio::spawn(async move {
             // TODO: stop when cancleed
@@ -132,30 +145,38 @@ impl NkvClient {
             }
         });
 
-        self.subscriptions.insert(key, true);
+        // server uses request id to differenciate between
+        // subscriptions. So we need it when unsubscribing
+        self.subscriptions.insert(key, Self::uuid());
 
         Ok(ServerResponse::Base(BaseResp {
-            id: Self::uuid(),
-            status: http::StatusCode::OK,
-            message: "Subscribed".to_string(),
+            id: self.client_uuid.clone(),
+            status: true,
         }))
     }
 
     async fn send_request(&mut self, request: &ServerRequest) -> tokio::io::Result<ServerResponse> {
         let stream = TcpStream::connect(&self.addr).await?;
-        let (read, write) = stream.into_split();
-        let mut writer = BufWriter::new(write);
-        let mut reader = BufReader::new(read);
+        let (reader, mut writer) = stream.into_split();
 
-        let req = serde_json::to_string(&request)?;
-        writer.write_all(req.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
+        let mut buf_reader = BufReader::new(reader);
+
+        let msg = format!("{}\n", request.to_string());
+        writer.write_all(msg.as_bytes()).await?;
         writer.flush().await?;
 
-        let mut response_buf = String::new();
+        let mut line = String::new();
+        buf_reader
+            .read_line(&mut line)
+            .await
+            .map_err(|_| tokio::io::Error::new(tokio::io::ErrorKind::Other, "read error"))?;
 
-        reader.read_line(&mut response_buf).await?;
-        let response: ServerResponse = serde_json::from_str(&response_buf)?;
+        let response: ServerResponse = line.trim_end().parse().map_err(|_| {
+            tokio::io::Error::new(
+                tokio::io::ErrorKind::Other,
+                "failed to parse message to UTF-8 String",
+            )
+        })?;
 
         Ok(response)
     }

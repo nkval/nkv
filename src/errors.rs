@@ -9,7 +9,8 @@ pub enum NotifierError {
     FailedToWriteMessage(tokio::io::Error),
     FailedToFlushMessage(tokio::io::Error),
     IoError(std::io::Error),
-    SubscribtionNotFound,
+
+    SubscriptionNotFound,
 }
 
 impl fmt::Display for NotifierError {
@@ -18,7 +19,7 @@ impl fmt::Display for NotifierError {
             NotifierError::FailedToWriteMessage(e) => write!(f, "Failed to Write Message: {}", e),
             NotifierError::FailedToFlushMessage(e) => write!(f, "Failed to Flush Message: {}", e),
             NotifierError::IoError(e) => write!(f, "IoError: {}", e),
-            NotifierError::SubscribtionNotFound => write!(f, "Subscription not found"),
+            NotifierError::SubscriptionNotFound => write!(f, "Subscription not found"),
         }
     }
 }
@@ -29,7 +30,7 @@ impl std::error::Error for NotifierError {
             NotifierError::FailedToWriteMessage(e) => Some(e),
             NotifierError::FailedToFlushMessage(e) => Some(e),
             NotifierError::IoError(e) => Some(e),
-            NotifierError::SubscribtionNotFound => None,
+            NotifierError::SubscriptionNotFound => None,
         }
     }
 }
@@ -39,17 +40,6 @@ pub enum NotifyKeyValueError {
     NotFound,
     NotificationError(NotificationError),
     IoError(std::io::Error),
-}
-
-impl NotifyKeyValueError {
-    pub fn to_http_status(&self) -> http::StatusCode {
-        match self {
-            NotifyKeyValueError::NotFound => http::StatusCode::NOT_FOUND,
-            NotifyKeyValueError::NoError => http::StatusCode::OK,
-            NotifyKeyValueError::NotificationError(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
-            NotifyKeyValueError::IoError(_) => http::StatusCode::INTERNAL_SERVER_ERROR,
-        }
-    }
 }
 
 impl From<std::io::Error> for NotifierError {
@@ -91,3 +81,24 @@ impl std::error::Error for NotifyKeyValueError {
         }
     }
 }
+
+#[derive(Debug)]
+pub enum SerializingError {
+    Missing(String),
+    UnknownCommand,
+    InvalidInput,
+    ParseError,
+}
+
+impl fmt::Display for SerializingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Missing(what) => write!(f, "Missing {}", what),
+            Self::UnknownCommand => write!(f, "Unknown command"),
+            Self::InvalidInput => write!(f, "Invalid input"),
+            Self::ParseError => write!(f, "Failed to parse base64"),
+        }
+    }
+}
+
+impl std::error::Error for SerializingError {}

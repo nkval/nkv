@@ -1,7 +1,7 @@
 use std::env;
 use std::io::{self, Write};
 
-use nkv::nkv::Message;
+use nkv::request_msg::Message;
 use nkv::NkvClient;
 use std::time::Instant;
 
@@ -50,7 +50,7 @@ async fn main() {
                         let start = Instant::now();
                         let resp = client.put(_key.to_string(), boxed_bytes).await.unwrap();
                         let elapsed = start.elapsed();
-                        println!("Request took: {:.2?}\n{}", elapsed, resp);
+                        println!("Request took: {:.2?}\n{:?}", elapsed, resp);
                     } else {
                         println!("PUT requires a key and a value");
                     }
@@ -60,7 +60,7 @@ async fn main() {
                         let start = Instant::now();
                         let resp = client.get(_key.to_string()).await.unwrap();
                         let elapsed = start.elapsed();
-                        println!("Request took: {:.2?}\n{}", elapsed, resp);
+                        println!("Request took: {:.2?}\n{:?}", elapsed, resp);
                     } else {
                         println!("GET requires a key");
                     }
@@ -70,7 +70,7 @@ async fn main() {
                         let start = Instant::now();
                         let resp = client.delete(_key.to_string()).await.unwrap();
                         let elapsed = start.elapsed();
-                        println!("Request took: {:.2?}\n{}", elapsed, resp);
+                        println!("Request took: {:.2?}\n{:?}", elapsed, resp);
                     } else {
                         println!("DELETE requires a key");
                     }
@@ -83,7 +83,7 @@ async fn main() {
                             .await
                             .unwrap();
                         let elapsed = start.elapsed();
-                        println!("Request took: {:.2?}\n{}", elapsed, resp);
+                        println!("Request took: {:.2?}\n{:?}", elapsed, resp);
                     } else {
                         println!("SUBSCRIBE requires a key");
                     }
@@ -93,7 +93,7 @@ async fn main() {
                         let start = Instant::now();
                         let resp = client.unsubscribe(key.to_string()).await.unwrap();
                         let elapsed = start.elapsed();
-                        println!("Request took: {:.2?}\n{}", elapsed, resp);
+                        println!("Request took: {:.2?}\n{:?}", elapsed, resp);
                     } else {
                         println!("SUBSCRIBE requires a key");
                     }

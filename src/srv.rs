@@ -5,11 +5,10 @@
 // using channels or from another program using tcp socket, for message
 // format you can check request_msg.rs
 
-use http::StatusCode;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{split, AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
@@ -167,50 +166,15 @@ impl Server {
             let unsub_tx = self.unsub_tx();
 
             tokio::select! {
-                Ok((stream, _addr)) = listener.accept() => {
-                    let (read_half, write_half) = split(stream);
-                    let mut reader = BufReader::new(read_half);
-                    let writer = BufWriter::new(write_half);
-
-                    tokio::spawn(async move {
-                        let mut buffer = String::new();
-                        match reader.read_line(&mut buffer).await {
-                            Ok(0) => {
-                                // Connection was closed
-                                return;
-                            }
-                            Ok(_) => match serde_json::from_str::<ServerRequest>(&buffer.trim()) {
-                                Ok(request) => {
-                                    match request {
-                                        ServerRequest::Put(PutMessage { .. }) => {
-                                            Self::handle_put(writer, put_tx.clone(), request).await
-                                        }
-                                        ServerRequest::Get(BaseMessage { .. }) => {
-                                            Self::handle_get(writer, get_tx.clone(), request).await
-                                        }
-                                        ServerRequest::Delete(BaseMessage { .. }) => {
-                                            Self::handle_delete(writer, del_tx.clone(), request).await
-                                        }
-                                        ServerRequest::Subscribe(BaseMessage { .. }) => {
-                                            Self::handle_sub(writer, sub_tx.clone(), request).await
-                                        }
-                                        ServerRequest::Unsubscribe(BaseMessage { .. }) => {
-                                            Self::handle_unsub(writer, unsub_tx.clone(), request).await
-                                        }
-
-                                    };
-                                }
-                                Err(e) => {
-                                    eprintln!("Failed to parse JSON: {}", e);
-                                }
-                            },
-                            Err(_) => {
-                                eprintln!("Failed to match request");
-                            }
-                        }
-                    });
+                Ok((stream, _)) = listener.accept() => {
+                    tokio::spawn(Self::handle_request(stream,
+                        put_tx.clone(),
+                        get_tx.clone(),
+                        del_tx.clone(),
+                        sub_tx.clone(),
+                        unsub_tx.clone()
+                    ));
                 }
-
                 _ = &mut self.cancel_rx => {
                     return;
                 }
@@ -218,192 +182,161 @@ impl Server {
         }
     }
 
-    async fn write_response(reply: ServerResponse, mut writer: TcpWriter) {
-        let json_reply = serde_json::to_string(&reply).unwrap();
-        if let Err(e) = writer.write_all(&json_reply.into_bytes()).await {
-            eprintln!("Failed to write to socket; err = {:?}", e);
+    async fn handle_request(
+        stream: tokio::net::TcpStream,
+        put_tx: mpsc::UnboundedSender<PutMsg>,
+        get_tx: mpsc::UnboundedSender<GetMsg>,
+        del_tx: mpsc::UnboundedSender<BaseMsg>,
+        sub_tx: mpsc::UnboundedSender<SubMsg>,
+        unsub_tx: mpsc::UnboundedSender<BaseMsg>,
+    ) {
+        let (read_half, write_half) = tokio::io::split(stream);
+        let mut reader = BufReader::new(read_half);
+        let writer = BufWriter::new(write_half);
+
+        let mut line = String::new();
+        if reader.read_line(&mut line).await.is_err() {
+            eprintln!("Failed to read request");
             return;
         }
-        if let Err(e) = writer.flush().await {
-            eprintln!("Failed to flush writer; err = {:?}", e);
+
+        let req: ServerRequest = match line.trim_end().parse() {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Failed to convert String to Request: {}", e);
+                return;
+            }
+        };
+
+        match req {
+            ServerRequest::Put(msg) => {
+                Self::handle_put(writer, put_tx, msg).await;
+            }
+            ServerRequest::Get(msg) => {
+                Self::handle_get(writer, get_tx, msg).await;
+            }
+            ServerRequest::Delete(msg) => {
+                Self::handle_delete(writer, del_tx, msg).await;
+            }
+            ServerRequest::Subscribe(msg) => {
+                Self::handle_sub(writer, sub_tx, msg).await;
+            }
+            ServerRequest::Unsubscribe(msg) => {
+                Self::handle_unsub(writer, unsub_tx, msg).await;
+            }
         }
     }
 
-    async fn handle_put(
-        writer: TcpWriter,
-        nkv_tx: mpsc::UnboundedSender<PutMsg>,
-        req: request_msg::ServerRequest,
-    ) {
-        match req {
-            request_msg::ServerRequest::Put(request_msg::PutMessage { base, value }) => {
-                let (resp_tx, mut resp_rx) = mpsc::channel(1);
-                // TODO: handle error and throw response
-                let _ = nkv_tx.send(PutMsg {
-                    key: base.key,
-                    value,
-                    resp_tx,
-                });
-                let nkv_resp = resp_rx.recv().await.unwrap();
-                let resp = request_msg::BaseResp {
-                    id: base.id,
-                    status: nkv_resp.to_http_status(),
-                    message: nkv_resp.to_string(),
-                };
-                Self::write_response(ServerResponse::Base(resp), writer).await;
-            }
-            _ => {
-                let resp = request_msg::BaseResp {
-                    id: "0".to_string(),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "wrong message for put handle".to_string(),
-                };
-                Self::write_response(ServerResponse::Base(resp), writer).await;
-            }
-        }
+    async fn handle_put(writer: TcpWriter, nkv_tx: mpsc::UnboundedSender<PutMsg>, msg: PutMessage) {
+        let (resp_tx, mut resp_rx) = mpsc::channel(1);
+        // TODO: handle error and throw response
+        let _ = nkv_tx.send(PutMsg {
+            key: msg.base.key,
+            value: msg.value,
+            resp_tx,
+        });
+        let nkv_resp = resp_rx.recv().await.unwrap();
+        let status = match nkv_resp {
+            NotifyKeyValueError::NoError => true,
+            _ => false,
+        };
+        let resp = request_msg::BaseResp {
+            id: msg.base.id,
+            status,
+        };
+        Self::write_response(ServerResponse::Base(resp), writer).await;
     }
 
     async fn handle_get(
         writer: TcpWriter,
         nkv_tx: mpsc::UnboundedSender<GetMsg>,
-        req: request_msg::ServerRequest,
+        msg: BaseMessage,
     ) {
-        match req {
-            request_msg::ServerRequest::Get(request_msg::BaseMessage {
-                id,
-                client_uuid: _,
-                key,
-            }) => {
-                let (get_resp_tx, mut get_resp_rx) = mpsc::channel(1);
-                let _ = nkv_tx.send(GetMsg {
-                    key,
-                    resp_tx: get_resp_tx,
-                });
-                let nkv_resp = get_resp_rx.recv().await.unwrap();
-                let data: Vec<Vec<u8>> = nkv_resp
-                    .value
-                    .into_iter()
-                    .map(|arc| arc.as_ref().to_vec())
-                    .collect();
-                let resp = request_msg::DataResp {
-                    base: request_msg::BaseResp {
-                        id,
-                        status: nkv_resp.err.to_http_status(),
-                        message: nkv_resp.err.to_string(),
-                    },
-                    data,
-                };
-                Self::write_response(ServerResponse::Get(resp), writer).await;
-            }
-            _ => {
-                let resp = request_msg::BaseResp {
-                    id: "0".to_string(),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "wrong message for get  handle".to_string(),
-                };
-                Self::write_response(ServerResponse::Base(resp), writer).await;
-            }
-        }
+        let (get_resp_tx, mut get_resp_rx) = mpsc::channel(1);
+        let _ = nkv_tx.send(GetMsg {
+            key: msg.key,
+            resp_tx: get_resp_tx,
+        });
+        let nkv_resp = get_resp_rx.recv().await.unwrap();
+        let data: Vec<Vec<u8>> = nkv_resp
+            .value
+            .into_iter()
+            .map(|arc| arc.as_ref().to_vec())
+            .collect();
+        let status = match nkv_resp.err {
+            NotifyKeyValueError::NoError => true,
+            _ => false,
+        };
+        let resp = request_msg::DataResp {
+            base: request_msg::BaseResp { id: msg.id, status },
+            data,
+        };
+        Self::write_response(ServerResponse::Data(resp), writer).await;
     }
 
     async fn handle_delete(
         writer: TcpWriter,
         nkv_tx: mpsc::UnboundedSender<BaseMsg>,
-        req: request_msg::ServerRequest,
+        msg: BaseMessage,
     ) {
-        match req {
-            request_msg::ServerRequest::Delete(request_msg::BaseMessage {
-                id,
-                client_uuid,
-                key,
-            }) => {
-                let (resp_tx, mut resp_rx) = mpsc::channel(1);
-                let _ = nkv_tx.send(BaseMsg {
-                    key,
-                    uuid: client_uuid,
-                    resp_tx,
-                });
-                let nkv_resp = resp_rx.recv().await.unwrap();
-                let resp = request_msg::BaseResp {
-                    id,
-                    status: nkv_resp.to_http_status(),
-                    message: nkv_resp.to_string(),
-                };
-                Self::write_response(ServerResponse::Base(resp), writer).await;
-            }
-            _ => {
-                let resp = request_msg::BaseResp {
-                    id: "0".to_string(),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "wrong message for the handle".to_string(),
-                };
-                Self::write_response(ServerResponse::Base(resp), writer).await;
-            }
-        }
+        let (resp_tx, mut resp_rx) = mpsc::channel(1);
+        let _ = nkv_tx.send(BaseMsg {
+            key: msg.key,
+            uuid: msg.client_uuid,
+            resp_tx,
+        });
+        let nkv_resp = resp_rx.recv().await.unwrap();
+        let status = match nkv_resp {
+            NotifyKeyValueError::NoError => true,
+            _ => false,
+        };
+        let resp = request_msg::BaseResp { id: msg.id, status };
+        Self::write_response(ServerResponse::Base(resp), writer).await;
     }
 
     async fn handle_sub(
         writer: TcpWriter,
         nkv_tx: mpsc::UnboundedSender<SubMsg>,
-        req: request_msg::ServerRequest,
+        msg: BaseMessage,
     ) {
-        match req {
-            request_msg::ServerRequest::Subscribe(request_msg::BaseMessage {
-                id: _,
-                client_uuid,
-                key,
-            }) => {
-                let (resp_tx, _) = mpsc::channel(1);
-                let _ = nkv_tx.send(SubMsg {
-                    key,
-                    uuid: client_uuid,
-                    writer,
-                    resp_tx,
-                });
-            }
-            _ => {
-                let resp = request_msg::BaseResp {
-                    id: "0".to_string(),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "wrong message for sub handle".to_string(),
-                };
-                Self::write_response(ServerResponse::Base(resp), writer).await;
-            }
-        }
+        let (resp_tx, _) = mpsc::channel(1);
+        let _ = nkv_tx.send(SubMsg {
+            key: msg.key,
+            uuid: msg.client_uuid,
+            writer,
+            resp_tx,
+        });
     }
 
     async fn handle_unsub(
         writer: TcpWriter,
         nkv_tx: mpsc::UnboundedSender<BaseMsg>,
-        req: request_msg::ServerRequest,
+        msg: BaseMessage,
     ) {
-        match req {
-            request_msg::ServerRequest::Unsubscribe(request_msg::BaseMessage {
-                id,
-                client_uuid,
-                key,
-            }) => {
-                let (resp_tx, mut resp_rx) = mpsc::channel(1);
-                let _ = nkv_tx.send(BaseMsg {
-                    key,
-                    uuid: client_uuid,
-                    resp_tx,
-                });
-                let nkv_resp = resp_rx.recv().await.unwrap();
-                let resp = request_msg::BaseResp {
-                    id,
-                    status: nkv_resp.to_http_status(),
-                    message: nkv_resp.to_string(),
-                };
-                Self::write_response(ServerResponse::Base(resp), writer).await;
-            }
-            _ => {
-                let resp = request_msg::BaseResp {
-                    id: "0".to_string(),
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: "wrong message for unsub handle".to_string(),
-                };
-                Self::write_response(ServerResponse::Base(resp), writer).await;
-            }
+        let (resp_tx, mut resp_rx) = mpsc::channel(1);
+        let _ = nkv_tx.send(BaseMsg {
+            key: msg.key,
+            uuid: msg.client_uuid,
+            resp_tx,
+        });
+        let nkv_resp = resp_rx.recv().await.unwrap();
+        let status = match nkv_resp {
+            NotifyKeyValueError::NoError => true,
+            _ => false,
+        };
+        let resp = request_msg::BaseResp { id: msg.id, status };
+        Self::write_response(ServerResponse::Base(resp), writer).await;
+    }
+
+    async fn write_response(reply: ServerResponse, mut writer: TcpWriter) {
+        let msg = format!("{}\n", reply.to_string());
+        if let Err(e) = writer.write_all(&msg.into_bytes()).await {
+            eprintln!("Failed to write to socket; err = {:?}", e);
+            return;
+        }
+        if let Err(e) = writer.flush().await {
+            eprintln!("Failed to flush socket; err = {:?}", e);
+            return;
         }
     }
 
@@ -427,7 +360,7 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::nkv::Message;
+    use crate::request_msg::Message;
     use crate::NkvClient;
     use tempfile::TempDir;
     use tokio::{self, net::TcpStream};
@@ -529,19 +462,17 @@ mod tests {
             resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
                 id: "0".to_string(),
-                status: http::StatusCode::OK,
-                message: "No Error".to_string(),
+                status: true,
             })
         );
 
         let get_resp = client.get(key.clone()).await.unwrap();
         assert_eq!(
             get_resp,
-            request_msg::ServerResponse::Get(request_msg::DataResp {
+            request_msg::ServerResponse::Data(request_msg::DataResp {
                 base: request_msg::BaseResp {
                     id: "0".to_string(),
-                    status: http::StatusCode::OK,
-                    message: "No Error".to_string(),
+                    status: true,
                 },
                 data: vec!(value.to_vec()),
             })
@@ -550,13 +481,9 @@ mod tests {
         let err_get_resp = client.get("non-existent-key".to_string()).await.unwrap();
         assert_eq!(
             err_get_resp,
-            request_msg::ServerResponse::Get(request_msg::DataResp {
-                base: request_msg::BaseResp {
-                    id: "0".to_string(),
-                    status: http::StatusCode::NOT_FOUND,
-                    message: "Not Found".to_string(),
-                },
-                data: Vec::new(),
+            request_msg::ServerResponse::Base(request_msg::BaseResp {
+                id: "0".to_string(),
+                status: false,
             })
         );
 
@@ -577,8 +504,7 @@ mod tests {
             sub_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
                 id: "0".to_string(),
-                status: http::StatusCode::OK,
-                message: "Subscribed".to_string(),
+                status: true,
             })
         );
         if let Some(val) = rx.recv().await {
@@ -595,8 +521,7 @@ mod tests {
             unsub_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
                 id: "0".to_string(),
-                status: StatusCode::OK,
-                message: "No Error".to_string(),
+                status: true,
             })
         );
         if let Some(val) = rx.recv().await {
@@ -626,8 +551,7 @@ mod tests {
             resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
                 id: "0".to_string(),
-                status: http::StatusCode::OK,
-                message: "No Error".to_string(),
+                status: true,
             })
         );
 
@@ -648,8 +572,7 @@ mod tests {
             del_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
                 id: "0".to_string(),
-                status: http::StatusCode::OK,
-                message: "No Error".to_string(),
+                status: true,
             })
         );
         if let Some(val) = rx.recv().await {
@@ -661,13 +584,9 @@ mod tests {
         let del_get_resp = client.get(key.clone()).await.unwrap();
         assert_eq!(
             del_get_resp,
-            request_msg::ServerResponse::Get(request_msg::DataResp {
-                base: request_msg::BaseResp {
-                    id: "0".to_string(),
-                    status: http::StatusCode::NOT_FOUND,
-                    message: "Not Found".to_string(),
-                },
-                data: Vec::new(),
+            request_msg::ServerResponse::Base(request_msg::BaseResp {
+                id: "0".to_string(),
+                status: false,
             })
         );
     }

@@ -10,6 +10,7 @@ it provides you with following API:
 - put the state for the given key
 - delete the state for the given key
 - subscribe to the updates for the given key
+- unsubscribe from the updated for the given key
 
 Note that nkv supports keyspace, more info you can find [here](./docs/KEYSPACE.md). 
 

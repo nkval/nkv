@@ -14,19 +14,16 @@
 // - NotFound -- when Subscriber is trying to subscribe to Notifier
 // with a value which is not there
 
-extern crate serde;
-extern crate serde_json;
-
 use crate::errors::NotifierError;
-use crate::nkv::Message;
+use crate::request_msg::Message;
 use crate::BaseMessage;
 use crate::ServerRequest;
 
-use serde_json::to_vec;
 use std::collections::HashMap;
+use std::str;
 use std::sync::Arc;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::{sleep, Duration};
@@ -80,7 +77,6 @@ impl Notifier {
         let c_msg_buf = Arc::clone(&msg_buf);
         tokio::spawn(async move {
             let clients = Arc::clone(&clients);
-            // let msg_buf = Arc::clone(&msg_buf);
             loop {
                 tokio::select! {
                     _ = rx.changed() => {
@@ -114,16 +110,12 @@ impl Notifier {
 
     pub async fn unsubscribe_all(&self, key: &str) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
+        let close_msg = Message::Close {
+            key: key.to_string(),
+        };
 
         for (_, mut stream) in clients.drain() {
-            Self::send_bytes(
-                &to_vec(&Message::Close {
-                    key: key.to_string(),
-                })
-                .unwrap(),
-                &mut stream,
-            )
-            .await?;
+            Self::send_bytes(&close_msg, &mut stream).await?;
         }
 
         Ok(())
@@ -151,27 +143,29 @@ impl Notifier {
     ) -> Result<(), NotifierError> {
         match clients.get_mut(&uuid) {
             Some(stream) => {
-                Self::send_bytes(&to_vec(&Message::Close { key }).unwrap(), stream).await?
+                let close_msg = Message::Close {
+                    key: key.to_string(),
+                };
+                Self::send_bytes(&close_msg, stream).await?
             }
-            None => return Err(NotifierError::SubscribtionNotFound),
+            None => return Err(NotifierError::SubscriptionNotFound),
         }
         clients.remove(&uuid);
         Ok(())
     }
 
-    async fn send_bytes(msg: &Vec<u8>, stream: &mut TcpWriter) -> Result<(), NotifierError> {
-        if let Err(e) = stream.write_all(&msg).await {
-            return Err(NotifierError::FailedToWriteMessage(e));
-        }
-        if let Err(e) = stream.flush().await {
-            return Err(NotifierError::FailedToFlushMessage(e));
-        }
+    async fn send_bytes(msg: &Message, stream: &mut TcpWriter) -> Result<(), NotifierError> {
+        // TODO: COPYING STUFF; NOT COOL
+        stream
+            .write_all(&format!("{}\n", msg.to_string()).into_bytes())
+            .await?;
+
+        stream.flush().await?;
+
         Ok(())
     }
 
     async fn broadcast_message(clients: Arc<Mutex<HashMap<String, TcpWriter>>>, message: &Message) {
-        let json_bytes = to_vec(&message).unwrap();
-
         let keys: Vec<String> = {
             let client_guard = clients.lock().await;
             client_guard.keys().cloned().collect()
@@ -180,7 +174,7 @@ impl Notifier {
         let mut failed_addrs = Vec::new();
         for uuid in keys.iter() {
             if let Some(stream) = clients.lock().await.get_mut(uuid) {
-                if let Err(e) = Self::send_bytes(&json_bytes, stream).await {
+                if let Err(e) = Self::send_bytes(&message, stream).await {
                     eprintln!("broadcast message: {}", e);
                     failed_addrs.push(uuid.clone());
                     continue;
@@ -236,35 +230,41 @@ impl Subscriber {
         let mut reader = BufReader::new(read_half);
 
         let req = ServerRequest::Subscribe(BaseMessage {
-            id: "0".to_string(),
+            id: self.uuid.clone(),
             key: self.key.to_string(),
             client_uuid: self.uuid.to_string(),
         });
-        let req = serde_json::to_string(&req)?;
-        writer.write_all(req.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
+
+        let req = format!("{}\n", req.to_string());
+        writer.write_all(&req.into_bytes()).await?;
         writer.flush().await?;
 
-        // TODO: we need to talk about max buff
-        let mut buffer = [0; 1024];
-        loop {
-            let n = reader.read(&mut buffer).await?;
+        let mut line = String::new();
+        while let Ok(n) = reader.read_line(&mut line).await {
             if n == 0 {
-                continue;
+                // Connection closed
+                break;
             }
-            self.parse_message(&buffer[..n]);
+            self.parse_message(&line.trim_end());
+            line.clear();
         }
+
+        Err(tokio::io::Error::new(
+            tokio::io::ErrorKind::Other,
+            "Connection reset by remote side",
+        ))
     }
 
-    fn parse_message(&self, message: &[u8]) {
-        match serde_json::from_slice::<Message>(message) {
-            Ok(msg) => {
-                _ = self.tx.send(msg);
-            }
+    fn parse_message(&self, message: &str) {
+        let message: Message = match message.parse() {
+            Ok(m) => m,
             Err(e) => {
                 eprintln!("Failed to parse message: {}", e);
+                return;
             }
-        }
+        };
+
+        _ = self.tx.send(message);
     }
 }
 
@@ -273,7 +273,7 @@ mod tests {
     use super::*;
     use crate::nkv::Notification;
     use std::net::SocketAddr;
-    use tokio::io::{split, AsyncBufReadExt};
+    use tokio::io::split;
     use tokio::net::TcpListener;
 
     #[tokio::test]
