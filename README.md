@@ -96,8 +96,9 @@ For detailed info about design you can find [here](./docs/DESIGN.md)
 Apart from application you can use `nkv` in
 
 - [Rust](./docs/CODING_RUST.md)
+- [Golang](https://github.com/uncleDecart/go-nkv)
 
- However, underlying design principle is that `nkv` is using OS primitives, making it possible to write clients in any language. Just write marshalling and demarshalling in JSON and be sure that you can connect to `Server` and handle `Notifier`. For detailed specification on components reffer to this [doc](./docs/DESIGN.md)
+However, underlying design principle is that `nkv` is using OS primitives, making it possible to write clients in any language. Just write marshalling and demarshalling in JSON and be sure that you can connect to `Server` and handle `Notifier`. For detailed specification on components reffer to this [doc](./docs/DESIGN.md)
 
 ### Background
 
