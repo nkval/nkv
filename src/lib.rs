@@ -5,6 +5,7 @@
 // and unsubscribe to a value
 
 pub mod errors;
+pub mod flag_parser;
 pub mod nkv;
 pub mod notifier;
 pub mod persist_value;
