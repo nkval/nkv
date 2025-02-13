@@ -1,23 +1,41 @@
 use std::env;
 use std::io::{self, Write};
 
+use nkv::flag_parser::FlagParser;
 use nkv::request_msg::Message;
 use nkv::NkvClient;
 use std::time::Instant;
 
 const DEFAULT_URL: &str = "/tmp/nkv/nkv.sock";
+const HELP_MESSAGE: &str = "nkv-client [--sock path-to-socket] [--help]\
+    run notify key value client\
+    --addr - specify where to create UNIX socket to listen to connections to\
+    --help - display this message";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
+    let allowed_flags = vec!["help".to_string(), "addr".to_string()];
     let args: Vec<String> = env::args().collect();
-
-    let url = if args.len() > 1 {
-        &args[1]
-    } else {
-        DEFAULT_URL
+    let flags = match FlagParser::new(args, Some(allowed_flags)) {
+        Ok(res) => res,
+        Err(err) => {
+            println!("error: {}", err);
+            println!("{}", HELP_MESSAGE);
+            return;
+        }
     };
 
-    let mut client = NkvClient::new(&url);
+    if flags.get("help").is_some() {
+        println!("{}", HELP_MESSAGE);
+        return;
+    }
+
+    let sock_path = match flags.get("addr") {
+        Some(&Some(ref val)) => val.clone(),
+        _ => DEFAULT_URL.to_string(),
+    };
+
+    let mut client = NkvClient::new(&sock_path);
 
     println!("Please enter the command words separated by whitespace, finish with a character return. Enter HELP for help:");
     loop {
