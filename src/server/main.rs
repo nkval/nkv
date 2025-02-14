@@ -1,8 +1,8 @@
-use std::{env, fs, path::PathBuf};
-use tempfile::TempDir;
-
+use dirs_next as dirs;
 use nkv::flag_parser::FlagParser;
 use nkv::srv;
+use std::{env, fs, path::PathBuf};
+use tempfile::TempDir;
 
 const DEFAULT_URL: &str = "/tmp/nkv/nkv.sock";
 
@@ -44,10 +44,21 @@ async fn main() {
             fs::create_dir_all(&val).expect(&format!("Failed to create directory {}", &val));
             PathBuf::from(val)
         }
-        _ => TempDir::new()
-            .expect("Failed to create temporary directory")
-            .into_path(),
+        _ => {
+            let default_dir = dirs::data_dir().unwrap().join("nkv");
+            if let Err(e) = fs::create_dir_all(&default_dir) {
+                println!(
+                    "Failed to create default dir {}: {}",
+                    default_dir.display(),
+                    e
+                );
+                return;
+            }
+            default_dir
+        }
     };
+
+    println!("state will be saved to: {}", dir.display());
 
     // creates a task where it waits to serve threads
     let (mut srv, _cancel) = srv::Server::new(sock_path.to_string(), dir).await.unwrap();
