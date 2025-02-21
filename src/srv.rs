@@ -13,6 +13,7 @@ use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
+use tracing::{error, info, info_span, instrument, Instrument};
 
 use crate::errors::NotifyKeyValueError;
 use crate::nkv::NkvCore;
@@ -175,9 +176,10 @@ impl Server {
         Ok((srv, usr_cancel_tx))
     }
 
+    #[instrument(name = "server_serve", skip_all)]
     pub async fn serve(&mut self) {
         let listener = UnixListener::bind(&self.addr).unwrap();
-        println!("listening on {}", self.addr);
+        info!("server is listening on {}", self.addr);
         loop {
             let put_tx = self.put_tx();
             let get_tx = self.get_tx();
@@ -187,13 +189,14 @@ impl Server {
 
             tokio::select! {
                 Ok((stream, _)) = listener.accept() => {
-                    tokio::spawn(Self::handle_request(stream,
+                    tokio::spawn({
+                        Self::handle_request(stream,
                         put_tx.clone(),
                         get_tx.clone(),
                         del_tx.clone(),
                         sub_tx.clone(),
                         unsub_tx.clone()
-                    ));
+                    )});
                 }
                 _ = &mut self.cancel_rx => {
                     return;
@@ -216,45 +219,73 @@ impl Server {
 
         let mut line = String::new();
         if reader.read_line(&mut line).await.is_err() {
-            eprintln!("Failed to read request");
+            error!("failed to read request");
             return;
         }
 
         let req: ServerRequest = match line.trim_end().parse() {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("Failed to convert String to Request: {}", e);
+                error!("failed to convert {} to Request: {}", line.trim_end(), e);
                 return;
             }
         };
 
+        // So that we can trace requests across threads for the given message id
+        let msg_id = match req {
+            ServerRequest::Put(ref msg) => msg.base.id.clone(),
+            ServerRequest::Get(ref msg)
+            | ServerRequest::Delete(ref msg)
+            | ServerRequest::Subscribe(ref msg)
+            | ServerRequest::Unsubscribe(ref msg) => msg.id.clone(),
+        };
+        let span = info_span!("handle_put", msg_id=%msg_id);
+        let _guard = span.enter();
         match req {
             ServerRequest::Put(msg) => {
-                Self::handle_put(writer, put_tx, msg).await;
+                Self::handle_put(writer, put_tx, msg)
+                    .instrument(span.clone())
+                    .await;
             }
             ServerRequest::Get(msg) => {
-                Self::handle_get(writer, get_tx, msg).await;
+                Self::handle_get(writer, get_tx, msg)
+                    .instrument(span.clone())
+                    .await;
             }
             ServerRequest::Delete(msg) => {
-                Self::handle_delete(writer, del_tx, msg).await;
+                Self::handle_delete(writer, del_tx, msg)
+                    .instrument(span.clone())
+                    .await;
             }
             ServerRequest::Subscribe(msg) => {
-                Self::handle_sub(writer, sub_tx, msg).await;
+                Self::handle_sub(writer, sub_tx, msg)
+                    .instrument(span.clone())
+                    .await;
             }
             ServerRequest::Unsubscribe(msg) => {
-                Self::handle_unsub(writer, unsub_tx, msg).await;
+                Self::handle_unsub(writer, unsub_tx, msg)
+                    .instrument(span.clone())
+                    .await;
             }
         }
     }
 
     async fn handle_put(writer: TcpWriter, nkv_tx: mpsc::UnboundedSender<PutMsg>, msg: PutMessage) {
         let (resp_tx, mut resp_rx) = mpsc::channel(1);
-        // TODO: handle error and throw response
-        let _ = nkv_tx.send(PutMsg {
+        let res = nkv_tx.send(PutMsg {
             key: msg.base.key,
             value: msg.value,
             resp_tx,
         });
+        if let Err(e) = res {
+            error!("failed sending message to channel: {}", e);
+            let resp = request_msg::BaseResp {
+                id: msg.base.id,
+                status: false, // failed to send request
+            };
+            return Self::write_response(ServerResponse::Base(resp), writer).await;
+        }
+
         let nkv_resp = resp_rx.recv().await.unwrap();
         let status = match nkv_resp {
             NotifyKeyValueError::NoError => true,
@@ -273,10 +304,19 @@ impl Server {
         msg: BaseMessage,
     ) {
         let (get_resp_tx, mut get_resp_rx) = mpsc::channel(1);
-        let _ = nkv_tx.send(GetMsg {
+        let res = nkv_tx.send(GetMsg {
             key: msg.key,
             resp_tx: get_resp_tx,
         });
+        if let Err(e) = res {
+            error!("failed sending message to channel: {}", e);
+            let resp = request_msg::BaseResp {
+                id: msg.id,
+                status: false, // failed to send request
+            };
+            return Self::write_response(ServerResponse::Base(resp), writer).await;
+        }
+
         let nkv_resp = get_resp_rx.recv().await.unwrap();
         let data: Vec<Vec<u8>> = nkv_resp
             .value
@@ -300,11 +340,20 @@ impl Server {
         msg: BaseMessage,
     ) {
         let (resp_tx, mut resp_rx) = mpsc::channel(1);
-        let _ = nkv_tx.send(BaseMsg {
+        let res = nkv_tx.send(BaseMsg {
             key: msg.key,
             uuid: msg.client_uuid,
             resp_tx,
         });
+        if let Err(e) = res {
+            error!("failed sending message to channel: {}", e);
+            let resp = request_msg::BaseResp {
+                id: msg.id,
+                status: false, // failed to send request
+            };
+            return Self::write_response(ServerResponse::Base(resp), writer).await;
+        }
+
         let nkv_resp = resp_rx.recv().await.unwrap();
         let status = match nkv_resp {
             NotifyKeyValueError::NoError => true,
@@ -320,12 +369,15 @@ impl Server {
         msg: BaseMessage,
     ) {
         let (resp_tx, _) = mpsc::channel(1);
-        let _ = nkv_tx.send(SubMsg {
+        let res = nkv_tx.send(SubMsg {
             key: msg.key,
             uuid: msg.client_uuid,
             writer,
             resp_tx,
         });
+        if let Err(e) = res {
+            error!("failed sending message to channel: {}", e);
+        }
     }
 
     async fn handle_unsub(
@@ -334,11 +386,20 @@ impl Server {
         msg: BaseMessage,
     ) {
         let (resp_tx, mut resp_rx) = mpsc::channel(1);
-        let _ = nkv_tx.send(BaseMsg {
+        let res = nkv_tx.send(BaseMsg {
             key: msg.key,
             uuid: msg.client_uuid,
             resp_tx,
         });
+        if let Err(e) = res {
+            error!("failed sending message to channel: {}", e);
+            let resp = request_msg::BaseResp {
+                id: msg.id,
+                status: false, // failed to send request
+            };
+            return Self::write_response(ServerResponse::Base(resp), writer).await;
+        }
+
         let nkv_resp = resp_rx.recv().await.unwrap();
         let status = match nkv_resp {
             NotifyKeyValueError::NoError => true,
@@ -351,11 +412,11 @@ impl Server {
     async fn write_response(reply: ServerResponse, mut writer: TcpWriter) {
         let msg = format!("{}\n", reply.to_string());
         if let Err(e) = writer.write_all(&msg.into_bytes()).await {
-            eprintln!("Failed to write to socket; err = {:?}", e);
+            error!("failed to write to socket; err = {:?}", e);
             return;
         }
         if let Err(e) = writer.flush().await {
-            eprintln!("Failed to flush socket; err = {:?}", e);
+            error!("failed to flush socket; err = {:?}", e);
             return;
         }
     }

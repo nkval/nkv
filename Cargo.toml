@@ -10,6 +10,9 @@ uuid = { version = "1.4", features = ["v4"] }
 tokio-util = { version = "0.7.12", features = ["codec"] }
 base64 = "0.22.1"
 dirs-next = "2.0.0"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
+tracing-appender = "0.2"
+tracing = "0.1.41"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
