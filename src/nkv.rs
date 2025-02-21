@@ -17,6 +17,7 @@ use crate::request_msg::Message;
 use crate::traits::StorageEngine;
 use crate::trie::{Trie, TrieNode};
 use tokio::sync::{mpsc, Mutex};
+use tracing::error;
 
 #[derive(Debug)]
 pub enum NotificationError {
@@ -154,17 +155,25 @@ impl<P: StorageEngine> NkvCore<P> {
             )
         });
 
-        self.storage.put(key, value.clone())?;
+        self.storage.put(key, value.clone()).map_err(|err| {
+            error!("failed to store value: {}", err);
+            err
+        })?;
 
         if let Some(notifier) = self.notifiers.get_mut(key, capture_and_push).await {
-            let _ = notifier
+            match notifier
                 .lock()
                 .await
-                .send_update(key.to_string(), value.clone());
+                .send_update(key.to_string(), value.clone())
+            {
+                Err(err) => error!("failed to send update notification for {}: {}", key, err),
+                _ => {}
+            }
         }
 
         let vector_lock = vector.lock().await;
         for notifier_arc in vector_lock.iter() {
+            // TODO: write an error log connecting to specific notifier?
             notifier_arc
                 .lock()
                 .await
@@ -216,7 +225,10 @@ impl<P: StorageEngine> NkvCore<P> {
             }
             val.lock().await.unsubscribe_all(key)?;
         }
-        self.storage.delete(key)?;
+        self.storage.delete(key).map_err(|err| {
+            error!("failed to delete {} from storage: {}", key, err);
+            err
+        })?;
         self.notifiers.remove(key);
         Ok(())
     }
@@ -231,7 +243,10 @@ impl<P: StorageEngine> NkvCore<P> {
         } else {
             // Client can subscribe to a non-existent value
             let n = Arc::new(Mutex::new(Notification::new()));
-            let tx = n.lock().await.subscribe(uuid)?;
+            let tx = n.lock().await.subscribe(uuid).map_err(|err| {
+                error!("failed to subscribe: {}", err); // TODO: add uuid here?
+                err
+            })?;
             self.notifiers.insert(key, n);
             return Ok(tx);
         }
@@ -243,7 +258,13 @@ impl<P: StorageEngine> NkvCore<P> {
         uuid: String,
     ) -> Result<(), NotifyKeyValueError> {
         if let Some(val) = self.notifiers.get_mut(key, None).await {
-            val.lock().await.unsubscribe(key.to_string(), &uuid)?;
+            val.lock()
+                .await
+                .unsubscribe(key.to_string(), &uuid)
+                .map_err(|err| {
+                    error!("failed to unsubscribe for key {}: {}", key, err);
+                    err
+                })?;
             Ok(())
         } else {
             Err(NotifyKeyValueError::NotFound)

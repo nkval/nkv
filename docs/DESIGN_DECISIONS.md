@@ -20,3 +20,18 @@ what libs are required and then copyting them there (although, it is doable). As
 musl supports static linking. There are known issues with musl performance described in this
 [article](https://andygrove.io/2020/05/why-musl-extremely-slow/) but for now we regard this 
 problem as premature optimisation, we need to figure out, which APIs and clients are useful. 
+
+### Logging
+
+#### Why trace library?
+
+nkv is asynchronous system, interpreting traditional log messages can be quite complicated.
+trace allows libraries and applications to record structured events with additional information
+about *temporality* and *causality* — unlike a log message, a span in tracing has a beginning
+and end time, may be entered and exited by the flow of execution, and may exist within a nested
+tree of similar spans. In addition, tracing spans are structured, with the ability to record
+typed data as well as textual messages. [1](https://docs.rs/tracing/latest/tracing/)
+
+Another important assumption is that nkv would be deployed in a multi-service architecture
+where log collection is not trivial, hence we want to give developers flexibility of adding
+different sinks to write logs to.

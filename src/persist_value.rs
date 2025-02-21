@@ -11,6 +11,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::NamedTempFile;
+use tracing::{debug, error};
 
 #[derive(Debug)]
 pub struct FileStorage {
@@ -91,7 +92,11 @@ impl FileStorage {
 impl StorageEngine for FileStorage {
     fn put(&mut self, key: &str, data: Box<[u8]>) -> std::io::Result<()> {
         let fp = self.root.join(Self::key_to_path(key));
-        atomic_write(&*data, &fp)?;
+        debug!("file path is : {:?}", fp);
+        atomic_write(&*data, &fp).map_err(|err| {
+            error!("atomic_write failed for {:?}: {}", &fp, err);
+            err
+        })?;
         self.files.insert(key, fp);
         Ok(())
     }
@@ -105,7 +110,7 @@ impl StorageEngine for FileStorage {
         for files in self.files.get(key) {
             match fs::read(files) {
                 Ok(data) => res.push(Arc::clone(&data.into_boxed_slice().into())),
-                Err(_) => eprintln!("Failed to read file"),
+                Err(_) => error!("failed to read {:?}", files),
             };
         }
         res

@@ -28,6 +28,8 @@ use tokio::net::UnixStream;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::{sleep, Duration};
 
+use tracing::error;
+
 #[derive(Debug)]
 struct StateBuf<T> {
     buf: [Option<T>; 2],
@@ -105,7 +107,7 @@ impl Notifier {
 
     pub async fn unsubscribe(&self, key: String, uuid: String) -> Result<(), NotifierError> {
         let mut clients = self.clients.lock().await;
-        Self::unsubscribe_impl(key, &mut clients, uuid).await
+        Self::unsubscribe_impl(key, &mut clients, &uuid).await
     }
 
     pub async fn unsubscribe_all(&self, key: &str) -> Result<(), NotifierError> {
@@ -139,9 +141,9 @@ impl Notifier {
     async fn unsubscribe_impl(
         key: String,
         clients: &mut HashMap<String, TcpWriter>,
-        uuid: String,
+        uuid: &str,
     ) -> Result<(), NotifierError> {
-        match clients.get_mut(&uuid) {
+        match clients.get_mut(uuid) {
             Some(stream) => {
                 let close_msg = Message::Close {
                     key: key.to_string(),
@@ -150,7 +152,7 @@ impl Notifier {
             }
             None => return Err(NotifierError::SubscriptionNotFound),
         }
-        clients.remove(&uuid);
+        clients.remove(uuid);
         Ok(())
     }
 
@@ -175,7 +177,7 @@ impl Notifier {
         for uuid in keys.iter() {
             if let Some(stream) = clients.lock().await.get_mut(uuid) {
                 if let Err(e) = Self::send_bytes(&message, stream).await {
-                    eprintln!("broadcast message: {}", e);
+                    error!("failed to broadcast message {:?}: {}", message, e);
                     failed_addrs.push(uuid.clone());
                     continue;
                 }
@@ -184,9 +186,9 @@ impl Notifier {
 
         let mut clients = clients.lock().await;
         for uuid in failed_addrs {
-            match Self::unsubscribe_impl("failed addr".to_string(), &mut clients, uuid).await {
+            match Self::unsubscribe_impl("failed addr".to_string(), &mut clients, &uuid).await {
                 Ok(_) => {}
-                Err(e) => eprintln!("Failed to unsubscribe: {}", e),
+                Err(e) => error!("failed to unsubscribe from {}: {}", uuid, e),
             }
         }
     }
@@ -259,7 +261,7 @@ impl Subscriber {
         let message: Message = match message.parse() {
             Ok(m) => m,
             Err(e) => {
-                eprintln!("Failed to parse message: {}", e);
+                error!("failed to parse message {}: {}", message, e);
                 return;
             }
         };
