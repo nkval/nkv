@@ -13,9 +13,21 @@ use std::sync::Arc;
 use tempfile::NamedTempFile;
 use tracing::{debug, error};
 
+// FileStorage implements StorageEngine and allows to save state on disk
+// main feature of this structure is to allow saving files atomically,
+// so there will be no corrupted files saved.
+// - First, two directories in the root directory are created: ingest and digest.
+// - Each file stored is written to ingest path
+// - Then that file is renamed to the same location in digest path
+// All of this is done in write_atomic function, since renaming is atomic operation
+// in OS context, there won't be any corrupted files, we create two directories in
+// specified root folder, because renaming could only be done within the _same_
+// file system.
 #[derive(Debug)]
 pub struct FileStorage {
     root: PathBuf,
+    ingest: PathBuf,
+    digest: PathBuf,
     files: Trie<PathBuf>,
 }
 
@@ -41,8 +53,33 @@ impl FileStorage {
         }
     }
 
+    fn iterate_folders(
+        cur_path: PathBuf,
+        files: &mut Trie<PathBuf>,
+        root: &PathBuf,
+    ) -> io::Result<()> {
+        if cur_path.is_file() {
+            match cur_path.file_name() {
+                Some(_) => {
+                    let key = Self::path_to_key(&cur_path, root);
+                    if key != "" {
+                        files.insert(&key, cur_path);
+                    }
+                }
+                None => {} // i.e. / /foo.txt/..
+            }
+        } else if cur_path.is_dir() {
+            for entry in cur_path.read_dir()? {
+                Self::iterate_folders(entry?.path(), files, root)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn new(path: PathBuf) -> io::Result<Self> {
         let mut res = Self {
+            ingest: path.join("ingest/"),
+            digest: path.join("digest/"),
             root: path,
             files: Trie::new(),
         };
@@ -54,36 +91,41 @@ impl FileStorage {
             ));
         }
 
-        for entry in fs::read_dir(&res.root)? {
+        // delete state from previous run, files here are corrupted
+        if res.ingest.exists() {
+            fs::remove_dir_all(&res.ingest)?;
+        }
+
+        if !res.digest.exists() {
+            fs::create_dir_all(&res.digest)?;
+        }
+
+        for entry in fs::read_dir(&res.digest)? {
             let entry = entry?;
             let path = entry.path();
 
             if path.is_file() {
                 match path.file_name() {
                     Some(_) => {
-                        let key = Self::path_to_key(&path, &res.root);
+                        let key = Self::path_to_key(&path, &res.digest);
                         if key != "" {
                             res.files.insert(&key, path);
                         }
                     }
-                    None => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            format!("{:?} is a directory, not a file", path),
-                        ))
-                    }
+                    None => {} // / or /foo.txt/..
                 }
             } else if path.is_dir() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("{:?} is a directory, not a file", path),
-                ));
+                match path.file_name() {
+                    Some(_) => {
+                        Self::iterate_folders(path, &mut res.files, &res.digest)?;
+                    }
+                    None => {} // / or /foo.txt/..
+                }
             }
         }
 
-        if !res.root.exists() {
-            fs::create_dir_all(&res.root)?;
-        }
+        // create directory after reading state so that we don't have to explicitly ignore it
+        fs::create_dir_all(&res.ingest)?;
 
         Ok(res)
     }
@@ -91,9 +133,9 @@ impl FileStorage {
 
 impl StorageEngine for FileStorage {
     fn put(&mut self, key: &str, data: Box<[u8]>) -> std::io::Result<()> {
-        let fp = self.root.join(Self::key_to_path(key));
+        let fp = self.digest.join(Self::key_to_path(key));
         debug!("file path is : {:?}", fp);
-        atomic_write(&*data, &fp).map_err(|err| {
+        atomic_write(&*data, &self.ingest, fp.as_path()).map_err(|err| {
             error!("atomic_write failed for {:?}: {}", &fp, err);
             err
         })?;
@@ -102,7 +144,7 @@ impl StorageEngine for FileStorage {
     }
 
     fn delete(&self, key: &str) -> std::io::Result<()> {
-        fs::remove_file(&self.root.join(Self::key_to_path(key)))
+        fs::remove_file(&self.digest.join(Self::key_to_path(key)))
     }
 
     fn get(&self, key: &str) -> Vec<Arc<[u8]>> {
@@ -117,8 +159,15 @@ impl StorageEngine for FileStorage {
     }
 }
 
-fn atomic_write(data: &[u8], filename: &Path) -> std::io::Result<()> {
-    let mut tmp_file = NamedTempFile::new()?;
+// create a temp file, write data to it, then atomically rename
+// temp file to
+// we need files to be on the same file system to rename them, otherwise
+// we will get cross-device link error while renaming
+// WARN: this will create orphant files if someone cuts the power mid way
+// for more info check README Known limitations section
+fn atomic_write(data: &[u8], ingest_dir: &Path, filename: &Path) -> std::io::Result<()> {
+    let mut tmp_file =
+        NamedTempFile::new_in(ingest_dir.parent().unwrap_or_else(|| Path::new(".")))?;
     tmp_file.write_all(data)?;
 
     if let Some(parent) = filename.parent() {
@@ -146,7 +195,10 @@ mod tests {
         fs.put(key, original_data.clone())
             .expect("Failed to put data");
 
-        let file_path = dir.path().join(FileStorage::key_to_path(key));
+        let file_path = dir
+            .path()
+            .join("digest")
+            .join(FileStorage::key_to_path(key));
         let data_from_file = fs::read(file_path.clone()).expect("Failed to read from filepath");
         assert_eq!(data_from_file, original_data.as_ref());
 
@@ -198,7 +250,10 @@ mod tests {
         fs.put(key, original_data.clone())
             .expect("Failed to put data");
 
-        let file_path = dir.path().join(FileStorage::key_to_path(key));
+        let file_path = dir
+            .path()
+            .join("digest")
+            .join(FileStorage::key_to_path(key));
         let data_from_file = fs::read(file_path.clone()).expect("Failed to read from filepath");
         assert_eq!(data_from_file, original_data.as_ref());
 
@@ -234,21 +289,52 @@ mod tests {
             let key = "key1";
             fs.put(key, original_data.clone())
                 .expect("Failed to put data");
-            let file_path = dir.path().join(FileStorage::key_to_path(key));
+            let file_path = dir
+                .path()
+                .join("digest")
+                .join(FileStorage::key_to_path(key));
             let data_from_file = fs::read(file_path.clone()).expect("Failed to read from filepath");
             assert_eq!(data_from_file, original_data.as_ref());
 
             let key = "key2";
             fs.put(key, original_data.clone())
                 .expect("Failed to put data");
-            let file_path = dir.path().join(FileStorage::key_to_path(key));
+            let file_path = dir
+                .path()
+                .join("digest")
+                .join(FileStorage::key_to_path(key));
             let data_from_file = fs::read(file_path.clone()).expect("Failed to read from filepath");
             assert_eq!(data_from_file, original_data.as_ref());
 
             let key = "key3";
             fs.put(key, original_data.clone())
                 .expect("Failed to put data");
-            let file_path = dir.path().join(FileStorage::key_to_path(key));
+            let file_path = dir
+                .path()
+                .join("digest")
+                .join(FileStorage::key_to_path(key));
+            let data_from_file = fs::read(file_path.clone()).expect("Failed to read from filepath");
+            assert_eq!(data_from_file, original_data.as_ref());
+
+            // Be sure that creating ingest and digest directories inside FileStorage::new won't affect
+            // user ability to create those folders
+            let key = "ingest.key4";
+            fs.put(key, original_data.clone())
+                .expect("Failed to put data");
+            let file_path = dir
+                .path()
+                .join("digest")
+                .join(FileStorage::key_to_path(key));
+            let data_from_file = fs::read(file_path.clone()).expect("Failed to read from filepath");
+            assert_eq!(data_from_file, original_data.as_ref());
+
+            let key = "digest.key4";
+            fs.put(key, original_data.clone())
+                .expect("Failed to put data");
+            let file_path = dir
+                .path()
+                .join("digest")
+                .join(FileStorage::key_to_path(key));
             let data_from_file = fs::read(file_path.clone()).expect("Failed to read from filepath");
             assert_eq!(data_from_file, original_data.as_ref());
         }
@@ -264,7 +350,15 @@ mod tests {
         assert_eq!(got, arc_vec);
 
         let got = fs.get("key3");
-        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data)];
+        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data.clone())];
+        assert_eq!(got, arc_vec);
+
+        let got = fs.get("ingest.key4");
+        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data.clone())];
+        assert_eq!(got, arc_vec);
+
+        let got = fs.get("digest.key4");
+        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data.clone())];
         assert_eq!(got, arc_vec);
     }
 }
