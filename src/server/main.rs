@@ -15,8 +15,8 @@ const DEFAULT_LOG_DIR: &str = "logs";
 
 const HELP_MESSAGE: &str = "nkv-server [--dir path-to-store-data] [--sock path-to-socket] [--logs path-to-logs] [--level info|debug|trace] [--help]
     run notify key value server
-    --dir - specify where to store files, if not specified it will create temprorary directory
-    --sock - specify where to create UNIX socket to listen to connections to
+    --dir - specify where to store files, if not specified it will create temporary directory
+    --addr - specify where to create UNIX socket to listen to connections to
     --logs - specify folder where to store logs, if not specified will use ./log
     --level - speficy log level: info, debug or trace from smallest to maximum amount of information. info if not specified
     --help - display this message";
@@ -26,7 +26,7 @@ async fn main() {
     let allowed_flags = vec![
         "dir".to_string(),
         "help".to_string(),
-        "sock".to_string(),
+        "addr".to_string(),
         "logs".to_string(),
         "level".to_string(),
     ];
@@ -63,7 +63,7 @@ async fn main() {
         return;
     }
 
-    let sock_path = match flags.get("sock") {
+    let sock_path = match flags.get("addr") {
         Some(&Some(ref val)) => val.clone(),
         _ => DEFAULT_URL.to_string(),
     };

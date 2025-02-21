@@ -13,7 +13,7 @@ use tokio::fs;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
-use tracing::{error, info, info_span, instrument, Instrument};
+use tracing::{debug, error, info, info_span, Instrument};
 
 use crate::errors::NotifyKeyValueError;
 use crate::nkv::NkvCore;
@@ -176,7 +176,6 @@ impl Server {
         Ok((srv, usr_cancel_tx))
     }
 
-    #[instrument(name = "server_serve", skip_all)]
     pub async fn serve(&mut self) {
         let listener = UnixListener::bind(&self.addr).unwrap();
         info!("server is listening on {}", self.addr);
@@ -239,8 +238,9 @@ impl Server {
             | ServerRequest::Subscribe(ref msg)
             | ServerRequest::Unsubscribe(ref msg) => msg.id.clone(),
         };
-        let span = info_span!("handle_put", msg_id=%msg_id);
+        let span = info_span!("handle_request", msg_id=%msg_id);
         let _guard = span.enter();
+        debug!("handling request {:?}", &req);
         match req {
             ServerRequest::Put(msg) => {
                 Self::handle_put(writer, put_tx, msg)
