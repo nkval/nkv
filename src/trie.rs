@@ -155,7 +155,7 @@ impl<T> Trie<T> {
         node.is_empty()
     }
 
-    fn collect_values<'a>(&'a self, node: &'a TrieNode<T>) -> Vec<&T> {
+    fn collect_values<'a>(&'a self, node: &'a TrieNode<T>) -> Vec<&'a T> {
         let mut result = Vec::new();
         if let Some(ref value) = node.value {
             result.push(value);
