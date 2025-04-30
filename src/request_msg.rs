@@ -326,11 +326,10 @@ impl FromStr for ServerResponse {
                 let base_resp: BaseResp = input_str.parse()?;
                 Ok(ServerResponse::Base(base_resp))
             }
-            3 => {
+            _ => {
                 let data_resp: DataResp = input_str.parse()?;
                 Ok(ServerResponse::Data(data_resp))
             }
-            _ => Err(SerializingError::UnknownCommand),
         }
     }
 }

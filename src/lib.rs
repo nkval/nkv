@@ -175,7 +175,7 @@ impl NkvClient {
         let response: ServerResponse = line.trim_end().parse().map_err(|_| {
             tokio::io::Error::new(
                 tokio::io::ErrorKind::Other,
-                "failed to parse message to UTF-8 String",
+                "failed to parse message to Server Response String",
             )
         })?;
 
