@@ -6,6 +6,7 @@
 
 use crate::traits::StorageEngine;
 use crate::trie::Trie;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -147,11 +148,16 @@ impl StorageEngine for FileStorage {
         fs::remove_file(&self.digest.join(Self::key_to_path(key)))
     }
 
-    fn get(&self, key: &str) -> Vec<Arc<[u8]>> {
-        let mut res: Vec<Arc<[u8]>> = Vec::new();
+    fn get(&self, key: &str) -> HashMap<String, Arc<[u8]>> {
+        let mut res: HashMap<String, Arc<[u8]>> = HashMap::new();
         for files in self.files.get(key) {
             match fs::read(files) {
-                Ok(data) => res.push(Arc::clone(&data.into_boxed_slice().into())),
+                Ok(data) => {
+                    res.insert(
+                        Self::path_to_key(files, &self.root.join("digest")),
+                        Arc::clone(&data.into_boxed_slice().into()),
+                    );
+                }
                 Err(_) => error!("failed to read {:?}", files),
             };
         }
@@ -203,8 +209,9 @@ mod tests {
         assert_eq!(data_from_file, original_data.as_ref());
 
         let got = fs.get(key);
-        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data)];
-        assert_eq!(got, arc_vec);
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert(key.to_string(), Arc::from(original_data));
+        assert_eq!(got, expected);
 
         let new_data: Box<[u8]> = Box::new([6, 7, 8, 9, 10]);
         fs.put(key, new_data.clone())
@@ -214,8 +221,9 @@ mod tests {
         assert_eq!(data_from_file, new_data.as_ref());
 
         let got = fs.get(key);
-        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(new_data)];
-        assert_eq!(got, arc_vec);
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert(key.to_string(), Arc::from(new_data));
+        assert_eq!(got, expected);
 
         fs.delete(key).expect("Failed to delete value");
         assert!(!file_path.exists());
@@ -258,8 +266,9 @@ mod tests {
         assert_eq!(data_from_file, original_data.as_ref());
 
         let got = fs.get(key);
-        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data)];
-        assert_eq!(got, arc_vec);
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert(key.to_string(), Arc::from(original_data));
+        assert_eq!(got, expected);
 
         let new_data: Box<[u8]> = Box::new([6, 7, 8, 9, 10]);
         fs.put(key, new_data.clone())
@@ -269,8 +278,9 @@ mod tests {
         assert_eq!(data_from_file, new_data.as_ref());
 
         let got = fs.get(key);
-        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(new_data)];
-        assert_eq!(got, arc_vec);
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert(key.to_string(), Arc::from(new_data));
+        assert_eq!(got, expected);
 
         fs.delete(key).expect("Failed to delete value");
         assert!(!file_path.exists());
@@ -342,23 +352,28 @@ mod tests {
         let fs = FileStorage::new(path.clone()).expect("Failed to create FileStorage");
 
         let got = fs.get("key1");
-        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data.clone())];
-        assert_eq!(got, arc_vec);
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("key1".to_string(), Arc::from(original_data.clone()));
+        assert_eq!(got, expected);
 
         let got = fs.get("key2");
-        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data.clone())];
-        assert_eq!(got, arc_vec);
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("key2".to_string(), Arc::from(original_data.clone()));
+        assert_eq!(got, expected);
 
         let got = fs.get("key3");
-        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data.clone())];
-        assert_eq!(got, arc_vec);
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("key3".to_string(), Arc::from(original_data.clone()));
+        assert_eq!(got, expected);
 
         let got = fs.get("ingest.key4");
-        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data.clone())];
-        assert_eq!(got, arc_vec);
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("ingest.key4".to_string(), Arc::from(original_data.clone()));
+        assert_eq!(got, expected);
 
         let got = fs.get("digest.key4");
-        let arc_vec: Vec<Arc<[u8]>> = vec![Arc::from(original_data.clone())];
-        assert_eq!(got, arc_vec);
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("digest.key4".to_string(), Arc::from(original_data.clone()));
+        assert_eq!(got, expected);
     }
 }

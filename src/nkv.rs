@@ -183,7 +183,7 @@ impl<P: StorageEngine> NkvCore<P> {
         Ok(())
     }
 
-    pub fn get(&self, key: &str) -> Vec<Arc<[u8]>> {
+    pub fn get(&self, key: &str) -> HashMap<String, Arc<[u8]>> {
         self.storage.get(key)
     }
 
@@ -291,7 +291,9 @@ mod tests {
         nkv.put("key1", data.clone()).await?;
 
         let result = nkv.get("key1");
-        assert_eq!(result, vec!(Arc::from(data)));
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("key1".to_string(), Arc::from(data));
+        assert_eq!(result, expected);
 
         Ok(())
     }
@@ -303,7 +305,7 @@ mod tests {
         let nkv = NkvCore::new(storage)?;
 
         let result = nkv.get("nonexistent_key");
-        assert_eq!(result, Vec::new());
+        assert_eq!(result, HashMap::new());
 
         Ok(())
     }
@@ -319,7 +321,7 @@ mod tests {
 
         nkv.delete("key1").await?;
         let result = nkv.get("key1");
-        assert_eq!(result, Vec::new());
+        assert_eq!(result, HashMap::new());
 
         Ok(())
     }
@@ -337,7 +339,9 @@ mod tests {
         nkv.put("key1", new_data.clone()).await?;
 
         let result = nkv.get("key1");
-        assert_eq!(result, vec!(Arc::from(new_data)));
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("key1".to_string(), Arc::from(new_data));
+        assert_eq!(result, expected);
 
         Ok(())
     }
@@ -361,13 +365,19 @@ mod tests {
         let storage = FileStorage::new(path)?;
         let nkv = NkvCore::new(storage)?;
         let result = nkv.get("key1");
-        assert_eq!(result, vec!(Arc::from(data1)));
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("key1".to_string(), Arc::from(data1));
+        assert_eq!(result, expected);
 
         let result = nkv.get("key2");
-        assert_eq!(result, vec!(Arc::from(data2)));
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("key2".to_string(), Arc::from(data2));
+        assert_eq!(result, expected);
 
         let result = nkv.get("key3");
-        assert_eq!(result, vec!(Arc::from(data3)));
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("key3".to_string(), Arc::from(data3));
+        assert_eq!(result, expected);
 
         Ok(())
     }
@@ -404,7 +414,9 @@ mod tests {
         }
 
         let result = nkv.get("key1");
-        assert_eq!(result, vec!(Arc::from(new_data)));
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("key1".to_string(), Arc::from(new_data));
+        assert_eq!(result, expected);
 
         Ok(())
     }
@@ -441,7 +453,9 @@ mod tests {
         }
 
         let result = nkv.get("ks1.ks2.ks4");
-        assert_eq!(result, vec!(Arc::from(new_data)));
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("ks1.ks2.ks4".to_string(), Arc::from(new_data));
+        assert_eq!(result, expected);
 
         Ok(())
     }
@@ -542,21 +556,26 @@ mod tests {
         nkv.put("ks1.ks2", data3.clone()).await?;
 
         let result = nkv.get("ks1.ks2.ks3.ks4.k");
-        assert_eq!(result, vec!(Arc::from(data1.clone())));
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("ks1.ks2.ks3.ks4.k".to_string(), Arc::from(data1.clone()));
+        assert_eq!(result, expected);
+
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("ks1.ks2.ks3.ks4.k".to_string(), Arc::from(data1.clone()));
+        expected.insert("ks1".to_string(), Arc::from(data2.clone()));
+        expected.insert("ks1.ks2".to_string(), Arc::from(data3.clone()));
 
         let result = nkv.get("ks1.*");
-        assert!(result.iter().any(|x| &**x == data1.as_ref()));
-        assert!(result.iter().any(|x| &**x == data2.as_ref()));
-        assert!(result.iter().any(|x| &**x == data3.as_ref()));
+        assert_eq!(result, expected);
 
         let result = nkv.get("*");
-        assert!(result.iter().any(|x| &**x == data1.as_ref()));
-        assert!(result.iter().any(|x| &**x == data2.as_ref()));
-        assert!(result.iter().any(|x| &**x == data3.as_ref()));
+        assert_eq!(result, expected);
 
         let result = nkv.get("ks1.ks2.*");
-        assert!(result.iter().any(|x| &**x == data1.as_ref()));
-        assert!(result.iter().any(|x| &**x == data3.as_ref()));
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("ks1.ks2.ks3.ks4.k".to_string(), Arc::from(data1.clone()));
+        expected.insert("ks1.ks2".to_string(), Arc::from(data3.clone()));
+        assert_eq!(result, expected);
 
         Ok(())
     }
