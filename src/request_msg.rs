@@ -4,6 +4,7 @@
 // used between NkvClient and Server
 
 use base64::Engine;
+use std::collections::HashMap;
 use std::fmt;
 use std::str;
 use std::str::FromStr;
@@ -202,18 +203,18 @@ impl PartialEq for BaseResp {
 
 pub struct DataResp {
     pub base: BaseResp,
-    pub data: Vec<Vec<u8>>,
+    pub data: HashMap<String, Vec<u8>>,
 }
 
 impl fmt::Display for DataResp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.base)?;
 
-        for el in self.data.iter() {
+        for (key, val) in self.data.iter() {
             // note: use same engine in decode as well
             let engine = base64::engine::general_purpose::STANDARD;
-            let value = engine.encode(el);
-            write!(f, " {}", value)?
+            let value = engine.encode(val);
+            write!(f, " {} {}", key, value)?
         }
         Ok(())
     }
@@ -223,10 +224,10 @@ impl fmt::Debug for DataResp {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.base)?;
 
-        for el in self.data.iter() {
-            match String::from_utf8(el.clone()) {
-                Ok(s) => write!(f, " {}", s)?,
-                Err(_) => write!(f, " {:?}", el)?,
+        for (key, val) in self.data.iter() {
+            match String::from_utf8(val.clone()) {
+                Ok(s) => write!(f, "{} {}", key, s)?,
+                Err(_) => write!(f, "{} {:?}", key, val)?,
             }
         }
         Ok(())
@@ -257,14 +258,21 @@ impl FromStr for DataResp {
 
         let base = BaseResp { id, status };
 
-        let data = parts
-            .map(|encoded| {
-                let engine = base64::engine::general_purpose::STANDARD;
-                engine
-                    .decode(encoded)
-                    .map_err(|_| SerializingError::ParseError)
-            })
-            .collect::<Result<Vec<Vec<u8>>, _>>()?;
+        let parts: Vec<&str> = parts.collect();
+
+        if parts.len() % 2 != 0 {
+            return Err(SerializingError::InvalidInput);
+        }
+
+        let mut data = HashMap::new();
+        let engine = base64::engine::general_purpose::STANDARD;
+        for pair in parts.chunks(2) {
+            let key = pair[0].to_string();
+            let value = engine
+                .decode(pair[1])
+                .map_err(|_| SerializingError::ParseError)?;
+            data.insert(key, value);
+        }
 
         Ok(Self { base, data })
     }
@@ -565,7 +573,9 @@ mod tests {
         });
         assert_eq!(resp.to_string(), format!("{} OK", &id));
 
-        let data: Vec<Vec<u8>> = vec![vec![1, 2, 3, 4]];
+        let key = "key".to_string();
+        let mut data: HashMap<String, Vec<u8>> = HashMap::new();
+        data.insert(key.clone(), vec![1, 2, 3, 4]);
         let resp = ServerResponse::Data(DataResp {
             base: BaseResp {
                 id: id.clone(),
@@ -574,8 +584,8 @@ mod tests {
             data: data.clone(),
         });
         let engine = base64::engine::general_purpose::STANDARD;
-        let value = engine.encode(&data[0]);
-        assert_eq!(resp.to_string(), format!("{} FAILED {}", id, value))
+        let value = engine.encode(&data[&key]);
+        assert_eq!(resp.to_string(), format!("{} FAILED {} {}", id, key, value))
     }
 
     #[test]
@@ -588,10 +598,12 @@ mod tests {
         let got: ServerResponse = format!("{} OK", &id).parse().unwrap();
         assert_eq!(got, expected);
 
-        let data: Vec<Vec<u8>> = vec![vec![1, 2, 3, 4]];
+        let key = "key".to_string();
+        let mut data: HashMap<String, Vec<u8>> = HashMap::new();
+        data.insert(key.clone(), vec![1, 2, 3, 4]);
         let engine = base64::engine::general_purpose::STANDARD;
-        let value = engine.encode(&data[0]);
-        let got: ServerResponse = format!("{} FAILED {}", id, value).parse().unwrap();
+        let value = engine.encode(&data[&key]);
+        let got: ServerResponse = format!("{} FAILED {} {}", id, key, value).parse().unwrap();
         let expected = ServerResponse::Data(DataResp {
             base: BaseResp {
                 id: id.clone(),

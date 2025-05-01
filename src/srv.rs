@@ -29,7 +29,7 @@ pub struct PutMsg {
 
 pub struct NkvGetResp {
     err: NotifyKeyValueError,
-    value: Vec<Arc<[u8]>>,
+    value: HashMap<String, Arc<[u8]>>,
 }
 
 pub struct GetMsg {
@@ -127,7 +127,7 @@ impl Server {
                             }).await;
                         } else {
                             let _ = req.resp_tx.send(NkvGetResp {
-                                value: Vec::new(),
+                                value: HashMap::new(),
                                 err: NotifyKeyValueError::NotFound
                             }).await;
                         }
@@ -318,10 +318,10 @@ impl Server {
         }
 
         let nkv_resp = get_resp_rx.recv().await.unwrap();
-        let data: Vec<Vec<u8>> = nkv_resp
+        let data: HashMap<String, Vec<u8>> = nkv_resp
             .value
             .into_iter()
-            .map(|arc| arc.as_ref().to_vec())
+            .map(|(k, v)| (k, v.as_ref().to_vec()))
             .collect();
         let status = match nkv_resp.err {
             NotifyKeyValueError::NoError => true,
@@ -491,7 +491,9 @@ mod tests {
         let got = get_resp_rx.recv().await.unwrap();
         assert!(matches!(got.err, NotifyKeyValueError::NoError));
 
-        assert_eq!(got.value, vec!(Arc::from(value)));
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert(key.clone(), Arc::from(value));
+        assert_eq!(got.value, expected);
 
         // create sub
         let stream = UnixStream::connect(&url).await.unwrap();
@@ -557,6 +559,8 @@ mod tests {
         );
 
         let get_resp = client.get(key.clone()).await.unwrap();
+        let mut data: HashMap<String, Vec<u8>> = HashMap::new();
+        data.insert(key.clone(), value.to_vec());
         assert_eq!(
             get_resp,
             request_msg::ServerResponse::Data(request_msg::DataResp {
@@ -564,7 +568,7 @@ mod tests {
                     id: "0".to_string(),
                     status: true,
                 },
-                data: vec!(value.to_vec()),
+                data,
             })
         );
 
