@@ -36,7 +36,10 @@ OPTIONS:
         - `trace` : Maximum level of detailed logs.
 
   --help
-      Display this help message and exit.";
+      Display this help message and exit.
+
+  --version
+      Display nkv-server version and exit.";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
@@ -52,10 +55,16 @@ async fn main() {
         Ok(res) => res,
         Err(err) => {
             println!("error: {}", err);
+            println!("nkv-server, version: {}", env!("CARGO_PKG_VERSION"));
             println!("{}", HELP_MESSAGE);
             return;
         }
     };
+
+    if flags.get("version").is_some() {
+        println!(env!("CARGO_PKG_VERSION"));
+        return;
+    }
 
     // and_then flattens Option<&Option<String>> to Option<String>
     // we only care if this particular flag is specified with a value
@@ -67,6 +76,7 @@ async fn main() {
             Ok(l) => l,
             Err(err) => {
                 println!("error parsing log level: {}", err);
+                println!("nkv-server, version: {}", env!("CARGO_PKG_VERSION"));
                 println!("{}", HELP_MESSAGE);
                 return;
             }
@@ -76,6 +86,7 @@ async fn main() {
     let _guard = init_logging(level.clone(), flags.get("logs").and_then(|o| o.clone()));
 
     if flags.get("help").is_some() {
+        println!("nkv-server, version: {}", env!("CARGO_PKG_VERSION"));
         println!("{}", HELP_MESSAGE);
         return;
     }
