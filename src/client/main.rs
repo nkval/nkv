@@ -16,7 +16,10 @@ OPTIONS:
       Supports UNIX socket paths.
 
   --help
-      Display this help message and exit.";
+      Display this help message and exit.
+
+  --version
+      Print nkv-client version and exit.";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() {
@@ -26,13 +29,20 @@ async fn main() {
         Ok(res) => res,
         Err(err) => {
             println!("error: {}", err);
+            println!("nkv-client, version: {}", env!("CARGO_PKG_VERSION"));
             println!("{}", HELP_MESSAGE);
             return;
         }
     };
 
     if flags.get("help").is_some() {
+        println!("nkv-client, version: {}", env!("CARGO_PKG_VERSION"));
         println!("{}", HELP_MESSAGE);
+        return;
+    }
+
+    if flags.get("version").is_some() {
+        println!(env!("CARGO_PKG_VERSION"));
         return;
     }
 
