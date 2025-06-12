@@ -214,7 +214,7 @@ impl fmt::Display for DataResp {
             // note: use same engine in decode as well
             let engine = base64::engine::general_purpose::STANDARD;
             let value = engine.encode(val);
-            write!(f, " {} {}", key, value)?
+            write!(f, " {} {}\n", key, value)?
         }
         Ok(())
     }
