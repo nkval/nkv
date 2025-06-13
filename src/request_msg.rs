@@ -2,6 +2,13 @@
 
 // This file contains common messages which are
 // used between NkvClient and Server
+// Main design decision in client-server communication
+// is that we use UTF-8 valid strings, so that you can
+// open socket and write to server manually, no tools needed
+// With that using Rust Display traits to serialize and deserialize
+// ServerRequest and Response.
+// Debug formatting used to print the request in human-readable
+// format
 
 use base64::Engine;
 use std::collections::HashMap;
@@ -214,7 +221,7 @@ impl fmt::Display for DataResp {
             // note: use same engine in decode as well
             let engine = base64::engine::general_purpose::STANDARD;
             let value = engine.encode(val);
-            write!(f, " {} {}\n", key, value)?
+            write!(f, " {} {}", key, value)?
         }
         Ok(())
     }
@@ -226,8 +233,8 @@ impl fmt::Debug for DataResp {
 
         for (key, val) in self.data.iter() {
             match String::from_utf8(val.clone()) {
-                Ok(s) => write!(f, "{} {}", key, s)?,
-                Err(_) => write!(f, "{} {:?}", key, val)?,
+                Ok(s) => write!(f, " {} {}", key, s)?,
+                Err(_) => write!(f, " {} {:?}", key, val)?,
             }
         }
         Ok(())
