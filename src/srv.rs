@@ -323,7 +323,6 @@ impl Server {
             .into_iter()
             .map(|(k, v)| (k, v.as_ref().to_vec()))
             .collect();
-        println!("AMIGO {:?}", &data);
         let status = match nkv_resp.err {
             NotifyKeyValueError::NoError => true,
             _ => false,

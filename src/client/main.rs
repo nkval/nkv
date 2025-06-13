@@ -6,6 +6,9 @@ use nkv::request_msg::Message;
 use nkv::NkvClient;
 use std::time::Instant;
 
+use nkv::request_msg::ServerResponse;
+use nkv::trie::Trie;
+
 const DEFAULT_URL: &str = "/tmp/nkv/nkv.sock";
 const HELP_MESSAGE: &str = "nkv-client [OPTIONS]
 Run the notify key-value (nkv) client.
@@ -100,6 +103,27 @@ async fn main() {
                         println!("GET requires a key");
                     }
                 }
+                "TREE" => {
+                    if let Some(_key) = parts.get(1) {
+                        let start = Instant::now();
+                        let resp = client.get(_key.to_string()).await.unwrap();
+                        let elapsed = start.elapsed();
+                        match resp {
+                            ServerResponse::Base(resp) => {
+                                println!("Request took: {:.2?}\n{:?}", elapsed, resp)
+                            }
+                            ServerResponse::Data(resp) => {
+                                let mut trie = Trie::new();
+                                for (key, val) in resp.data.iter() {
+                                    trie.insert(key, val);
+                                }
+                                println!("Request took: {:.2?}\n{:?}\n{}", elapsed, resp.base, trie)
+                            }
+                        };
+                    } else {
+                        println!("TREE requires a key");
+                    }
+                }
                 "DELETE" => {
                     if let Some(_key) = parts.get(1) {
                         let start = Instant::now();
@@ -140,6 +164,7 @@ async fn main() {
                     println!("Commands:");
                     println!("PUT key value");
                     println!("GET key");
+                    println!("TREE key");
                     println!("DELETE key");
                     println!("HELP");
                     println!("SUBSCRIBE key");

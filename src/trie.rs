@@ -40,15 +40,58 @@ impl<T> TrieNode<T> {
 
     fn fmt_with_indent(&self, f: &mut fmt::Formatter<'_>, key: &str, level: usize) -> fmt::Result {
         if level > 0 {
-            write!(f, "{:-<indent$}|", "", indent = (level - 1) * 2)?;
+            write!(f, "{:-<indent$}|", "", indent = (level - 1))?;
         }
-        write!(f, "{:-<indent$}--> {}\n", "", key, indent = level * 2)?;
+        write!(f, "{:-<indent$}-> {}\n", "", key, indent = level)?;
 
         for (k, v) in &self.children {
             v.fmt_with_indent(f, k, level + 1)?;
         }
 
         Ok(())
+    }
+}
+
+impl<T: PartialEq> PartialEq for TrieNode<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value && self.children == other.children
+    }
+}
+
+impl<T: Clone> Clone for TrieNode<T> {
+    fn clone(&self) -> Self {
+        TrieNode {
+            children: self.children.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
+
+pub struct TrieIter<'a, V> {
+    stack: Vec<(&'a TrieNode<V>, String)>,
+}
+
+impl<'a, V> Iterator for TrieIter<'a, V> {
+    type Item = (String, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some((node, path)) = self.stack.pop() {
+            // reverse to keep lexigraphical order
+            for (ch, child) in node.children.iter().collect::<Vec<_>>().into_iter().rev() {
+                let mut new_path = if path == "" {
+                    path.clone()
+                } else {
+                    path.clone() + "."
+                };
+                new_path.push_str(&ch);
+                self.stack.push((child, new_path));
+            }
+
+            if let Some(val) = &node.value {
+                return Some((path, val));
+            }
+        }
+        None
     }
 }
 
@@ -66,6 +109,12 @@ impl<T> Trie<T> {
 
     fn has_wildcard(key: &str) -> bool {
         key.contains("*")
+    }
+
+    pub fn iter(&self) -> TrieIter<'_, T> {
+        TrieIter {
+            stack: vec![(&self.root, String::new())],
+        }
     }
 
     pub fn insert(&mut self, key: &str, value: T) -> Option<TrieError> {
@@ -164,6 +213,20 @@ impl<T> Trie<T> {
             result.extend(self.collect_values(child));
         }
         result
+    }
+}
+
+impl<T: PartialEq> PartialEq for Trie<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root
+    }
+}
+
+impl<T: Clone> Clone for Trie<T> {
+    fn clone(&self) -> Self {
+        Trie {
+            root: self.root.clone(),
+        }
     }
 }
 
