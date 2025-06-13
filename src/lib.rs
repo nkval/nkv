@@ -172,7 +172,6 @@ impl NkvClient {
             .await
             .map_err(|_| tokio::io::Error::new(tokio::io::ErrorKind::Other, "read error"))?;
 
-        // println!("AAAMIGO {}", line);
         let response: ServerResponse = line.trim_end().parse().map_err(|_| {
             tokio::io::Error::new(
                 tokio::io::ErrorKind::Other,
