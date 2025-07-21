@@ -9,6 +9,9 @@ use std::time::Instant;
 use nkv::request_msg::ServerResponse;
 use nkv::trie::Trie;
 
+use rustyline::error::ReadlineError;
+use rustyline::{DefaultEditor, Result};
+
 const DEFAULT_URL: &str = "/tmp/nkv/nkv.sock";
 const HELP_MESSAGE: &str = "nkv-client [OPTIONS]
 Run the notify key-value (nkv) client.
@@ -25,7 +28,7 @@ OPTIONS:
       Print nkv-client version and exit.";
 
 #[tokio::main(flavor = "multi_thread")]
-async fn main() {
+async fn main() -> Result<()> {
     let allowed_flags = vec!["help".to_string(), "addr".to_string()];
     let args: Vec<String> = env::args().collect();
     let flags = match FlagParser::new(args, Some(allowed_flags)) {
@@ -34,19 +37,19 @@ async fn main() {
             println!("error: {}", err);
             println!("nkv-client, version: {}", env!("CARGO_PKG_VERSION"));
             println!("{}", HELP_MESSAGE);
-            return;
+            return Ok(());
         }
     };
 
     if flags.get("help").is_some() {
         println!("nkv-client, version: {}", env!("CARGO_PKG_VERSION"));
         println!("{}", HELP_MESSAGE);
-        return;
+        return Ok(());
     }
 
     if flags.get("version").is_some() {
         println!(env!("CARGO_PKG_VERSION"));
-        return;
+        return Ok(());
     }
 
     let sock_path = match flags.get("addr") {
@@ -56,124 +59,143 @@ async fn main() {
 
     let mut client = NkvClient::new(&sock_path);
 
+    let mut rl = DefaultEditor::new()?;
+    if rl.load_history("history.txt").is_err() {
+        println!("No previous history!");
+    }
+
     println!("Please enter the command words separated by whitespace, finish with a character return. Enter HELP for help:");
     loop {
-        let mut input = String::new();
+        let readline = rl.readline(">> ");
+        match readline {
+            Ok(input) => {
+                rl.add_history_entry(input.as_str())?;
+                let input = input.trim();
 
-        // Prompt the user for input
-        io::stdout().flush().unwrap(); // Ensure the prompt is shown immediately
+                // Split the input on whitespace
+                let parts: Vec<&str> = input.split_whitespace().collect();
 
-        // Read the input from the user
-        io::stdin()
-            .read_line(&mut input)
-            .expect("Failed to read line");
+                let print_update = Box::new(move |value: Message| {
+                    println!("Recieved update:\n{}", value);
+                });
 
-        // Trim the input to remove any trailing newline characters
-        let input = input.trim();
+                if let Some(command) = parts.get(0) {
+                    match &*command.to_lowercase() {
+                        "put" => {
+                            if let (Some(_key), Some(_value)) = (parts.get(1), parts.get(2)) {
+                                let byte_slice: &[u8] = _value.as_bytes();
+                                let boxed_bytes: Box<[u8]> = byte_slice.into();
 
-        // Split the input on whitespace
-        let parts: Vec<&str> = input.split_whitespace().collect();
-
-        let print_update = Box::new(move |value: Message| {
-            println!("Recieved update:\n{}", value);
-        });
-
-        if let Some(command) = parts.get(0) {
-            match *command {
-                "PUT" => {
-                    if let (Some(_key), Some(_value)) = (parts.get(1), parts.get(2)) {
-                        let byte_slice: &[u8] = _value.as_bytes();
-                        let boxed_bytes: Box<[u8]> = byte_slice.into();
-
-                        let start = Instant::now();
-                        let resp = client.put(_key.to_string(), boxed_bytes).await.unwrap();
-                        let elapsed = start.elapsed();
-                        println!("Request took: {:.2?}\n{:?}", elapsed, resp);
-                    } else {
-                        println!("PUT requires a key and a value");
-                    }
-                }
-                "GET" => {
-                    if let Some(_key) = parts.get(1) {
-                        let start = Instant::now();
-                        let resp = client.get(_key.to_string()).await.unwrap();
-                        let elapsed = start.elapsed();
-                        println!("Request took: {:.2?}\n{:?}", elapsed, resp);
-                    } else {
-                        println!("GET requires a key");
-                    }
-                }
-                "TREE" => {
-                    if let Some(_key) = parts.get(1) {
-                        let start = Instant::now();
-                        let resp = client.get(_key.to_string()).await.unwrap();
-                        let elapsed = start.elapsed();
-                        match resp {
-                            ServerResponse::Base(resp) => {
-                                println!("Request took: {:.2?}\n{:?}", elapsed, resp)
+                                let start = Instant::now();
+                                let resp = client.put(_key.to_string(), boxed_bytes).await.unwrap();
+                                let elapsed = start.elapsed();
+                                println!("Request took: {:.2?}\n{:?}", elapsed, resp);
+                            } else {
+                                println!("PUT requires a key and a value");
                             }
-                            ServerResponse::Data(resp) => {
-                                let mut trie = Trie::new();
-                                for (key, val) in resp.data.iter() {
-                                    trie.insert(key, val);
-                                }
-                                println!("Request took: {:.2?}\n{:?}\n{}", elapsed, resp.base, trie)
+                        }
+                        "get" => {
+                            if let Some(_key) = parts.get(1) {
+                                let start = Instant::now();
+                                let resp = client.get(_key.to_string()).await.unwrap();
+                                let elapsed = start.elapsed();
+                                println!("Request took: {:.2?}\n{:?}", elapsed, resp);
+                            } else {
+                                println!("GET requires a key");
                             }
-                        };
-                    } else {
-                        println!("TREE requires a key");
+                        }
+                        "tree" => {
+                            if let Some(_key) = parts.get(1) {
+                                let start = Instant::now();
+                                let resp = client.get(_key.to_string()).await.unwrap();
+                                let elapsed = start.elapsed();
+                                match resp {
+                                    ServerResponse::Base(resp) => {
+                                        println!("Request took: {:.2?}\n{:?}", elapsed, resp)
+                                    }
+                                    ServerResponse::Data(resp) => {
+                                        let mut trie = Trie::new();
+                                        for (key, val) in resp.data.iter() {
+                                            trie.insert(key, val);
+                                        }
+                                        println!(
+                                            "Request took: {:.2?}\n{:?}\n{}",
+                                            elapsed, resp.base, trie
+                                        )
+                                    }
+                                };
+                            } else {
+                                println!("TREE requires a key");
+                            }
+                        }
+                        "delete" => {
+                            if let Some(_key) = parts.get(1) {
+                                let start = Instant::now();
+                                let resp = client.delete(_key.to_string()).await.unwrap();
+                                let elapsed = start.elapsed();
+                                println!("Request took: {:.2?}\n{:?}", elapsed, resp);
+                            } else {
+                                println!("DELETE requires a key");
+                            }
+                        }
+                        "subscribe" => {
+                            if let Some(_key) = parts.get(1) {
+                                let start = Instant::now();
+                                let resp = client
+                                    .subscribe(_key.to_string(), print_update.clone())
+                                    .await
+                                    .unwrap();
+                                let elapsed = start.elapsed();
+                                println!("Request took: {:.2?}\n{:?}", elapsed, resp);
+                            } else {
+                                println!("SUBSCRIBE requires a key");
+                            }
+                        }
+                        "unsubscribe" => {
+                            if let Some(key) = parts.get(1) {
+                                let start = Instant::now();
+                                let resp = client.unsubscribe(key.to_string()).await.unwrap();
+                                let elapsed = start.elapsed();
+                                println!("Request took: {:.2?}\n{:?}", elapsed, resp);
+                            } else {
+                                println!("SUBSCRIBE requires a key");
+                            }
+                        }
+                        "quit" => {
+                            break;
+                        }
+                        "help" => {
+                            println!("Commands:");
+                            println!("PUT key value");
+                            println!("GET key");
+                            println!("TREE key");
+                            println!("DELETE key");
+                            println!("HELP");
+                            println!("SUBSCRIBE key");
+                            println!("QUIT");
+                        }
+                        &_ => {
+                            println!("Unknown command");
+                        }
                     }
                 }
-                "DELETE" => {
-                    if let Some(_key) = parts.get(1) {
-                        let start = Instant::now();
-                        let resp = client.delete(_key.to_string()).await.unwrap();
-                        let elapsed = start.elapsed();
-                        println!("Request took: {:.2?}\n{:?}", elapsed, resp);
-                    } else {
-                        println!("DELETE requires a key");
-                    }
-                }
-                "SUBSCRIBE" => {
-                    if let Some(_key) = parts.get(1) {
-                        let start = Instant::now();
-                        let resp = client
-                            .subscribe(_key.to_string(), print_update.clone())
-                            .await
-                            .unwrap();
-                        let elapsed = start.elapsed();
-                        println!("Request took: {:.2?}\n{:?}", elapsed, resp);
-                    } else {
-                        println!("SUBSCRIBE requires a key");
-                    }
-                }
-                "UNSUBSCRIBE" => {
-                    if let Some(key) = parts.get(1) {
-                        let start = Instant::now();
-                        let resp = client.unsubscribe(key.to_string()).await.unwrap();
-                        let elapsed = start.elapsed();
-                        println!("Request took: {:.2?}\n{:?}", elapsed, resp);
-                    } else {
-                        println!("SUBSCRIBE requires a key");
-                    }
-                }
-                "QUIT" => {
-                    break;
-                }
-                "HELP" => {
-                    println!("Commands:");
-                    println!("PUT key value");
-                    println!("GET key");
-                    println!("TREE key");
-                    println!("DELETE key");
-                    println!("HELP");
-                    println!("SUBSCRIBE key");
-                    println!("QUIT");
-                }
-                &_ => {
-                    println!("Unknown command");
-                }
+            }
+            Err(ReadlineError::Interrupted) => {
+                println!("CTRL-C");
+                break;
+            }
+            Err(ReadlineError::Eof) => {
+                println!("CTRL-D");
+                break;
+            }
+            Err(err) => {
+                println!("Error: {:?}", err);
+                break;
             }
         }
     }
+
+    rl.save_history("history.txt")?;
+
+    Ok(())
 }
