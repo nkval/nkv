@@ -1,5 +1,4 @@
 use std::env;
-use std::io::{self, Write};
 
 use nkv::flag_parser::FlagParser;
 use nkv::request_msg::Message;
@@ -57,7 +56,7 @@ async fn main() -> Result<()> {
         _ => DEFAULT_URL.to_string(),
     };
 
-    let mut client = NkvClient::new(&sock_path);
+    let mut client = NkvClient::new(&sock_path, "nkv-client".to_string());
 
     let mut rl = DefaultEditor::new()?;
     if rl.load_history("history.txt").is_err() {
@@ -104,6 +103,16 @@ async fn main() -> Result<()> {
                                 println!("GET requires a key");
                             }
                         }
+                        "trace" => {
+                            if let Some(_key) = parts.get(1) {
+                                let start = Instant::now();
+                                let resp = client.trace(_key.to_string()).await.unwrap();
+                                let elapsed = start.elapsed();
+                                println!("Request took: {:.2?}\n{:?}", elapsed, resp);
+                            } else {
+                                println!("TRACE requires a key");
+                            }
+                        }
                         "tree" => {
                             if let Some(_key) = parts.get(1) {
                                 let start = Instant::now();
@@ -122,6 +131,9 @@ async fn main() -> Result<()> {
                                             "Request took: {:.2?}\n{:?}\n{}",
                                             elapsed, resp.base, trie
                                         )
+                                    }
+                                    ServerResponse::Trace(resp) => {
+                                        println!("Request took: {:.2?}\n{:?}", elapsed, resp)
                                     }
                                 };
                             } else {
