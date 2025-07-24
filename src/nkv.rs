@@ -43,6 +43,7 @@ impl<T> From<mpsc::error::SendError<T>> for NotificationError {
 
 #[derive(Debug)]
 pub struct Notification {
+    // Key is client UUID which requested notification
     subscriptions: HashMap<String, mpsc::UnboundedSender<Message>>,
 }
 
@@ -269,6 +270,52 @@ impl<P: StorageEngine> NkvCore<P> {
         } else {
             Err(NotifyKeyValueError::NotFound)
         }
+    }
+    pub async fn trace(&mut self, key: &str) -> Result<Vec<String>, NotifyKeyValueError> {
+        let vector: Arc<Mutex<Vec<N>>> = Arc::new(Mutex::new(Vec::new()));
+        let vc = Arc::clone(&vector);
+
+        let capture_and_push: Option<
+            Box<
+                dyn Fn(&mut TrieNode<N>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                    + Send
+                    + Sync
+                    + 'static,
+            >,
+        > = Some({
+            Box::new(
+                move |trie_ref: &mut TrieNode<N>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                    let notifier_arc = match trie_ref.value.as_ref() {
+                        Some(value) => Arc::clone(&value),
+                        None => return Box::pin(async {}),
+                    };
+
+                    let vector_clone = Arc::clone(&vc);
+
+                    Box::pin(async move {
+                        let mut vector_lock = vector_clone.lock().await;
+                        vector_lock.push(notifier_arc);
+                    })
+                },
+            )
+        });
+
+        let mut cloned_vec: Vec<String> = Vec::new();
+
+        // include
+        if let Some(data) = self.notifiers.get_mut(key, capture_and_push).await {
+            for key in data.lock().await.subscriptions.keys().cloned() {
+                cloned_vec.push(key);
+            }
+        }
+
+        let vector_lock = vector.lock().await;
+        for notifier_arc in vector_lock.iter() {
+            for key in notifier_arc.lock().await.subscriptions.keys().cloned() {
+                cloned_vec.push(key);
+            }
+        }
+        return Ok(cloned_vec);
     }
 }
 
@@ -576,6 +623,97 @@ mod tests {
         expected.insert("ks1.ks2.ks3.ks4.k".to_string(), Arc::from(data1.clone()));
         expected.insert("ks1.ks2".to_string(), Arc::from(data3.clone()));
         assert_eq!(result, expected);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_trace() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
+        nkv.put("ks1.ks2.ks3.k", data).await?;
+
+        let result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        assert_eq!(result.len(), 0);
+
+        let result = nkv.trace("non.existent.key").await.unwrap();
+        assert_eq!(result.len(), 0);
+
+        let mut rx = nkv.subscribe("ks1", "uuid1".to_string()).await?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(msg, Message::Hello)
+        } else {
+            panic!("Should recieve msg");
+        }
+
+        let result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        assert_eq!(result, vec!["uuid1".to_string()]);
+
+        let mut rx = nkv.subscribe("ks1.ks2", "uuid2".to_string()).await?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(msg, Message::Hello)
+        } else {
+            panic!("Should recieve msg");
+        }
+        let mut result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        assert_eq!(
+            result.sort(),
+            vec!["uuid1".to_string(), "uuid2".to_string()].sort()
+        );
+
+        let mut rx = nkv.subscribe("ks1.ks2.ks3", "uuid3".to_string()).await?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(msg, Message::Hello)
+        } else {
+            panic!("Should recieve msg");
+        }
+        let mut result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        assert_eq!(
+            result.sort(),
+            vec![
+                "uuid1".to_string(),
+                "uuid2".to_string(),
+                "uuid3".to_string()
+            ]
+            .sort()
+        );
+
+        let mut rx = nkv.subscribe("ks1.ks2.ks3.k", "uuid4".to_string()).await?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(msg, Message::Hello)
+        } else {
+            panic!("Should recieve msg");
+        }
+        let mut result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        assert_eq!(
+            result.sort(),
+            vec![
+                "uuid4".to_string(),
+                "uuid1".to_string(),
+                "uuid2".to_string(),
+                "uuid3".to_string()
+            ]
+            .sort()
+        );
+
+        nkv.unsubscribe("ks1.ks2.ks3.k", "uuid4".to_string())
+            .await?;
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg,
+                Message::Close {
+                    key: "ks1.ks2.ks3.k".to_string()
+                }
+            )
+        } else {
+            panic!("Should recieve msg");
+        }
+
+        let result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        assert!(!result.contains(&"uuid4".to_string()));
 
         Ok(())
     }
