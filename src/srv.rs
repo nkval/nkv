@@ -37,6 +37,16 @@ pub struct GetMsg {
     pub resp_tx: mpsc::Sender<NkvGetResp>,
 }
 
+pub struct NkvTraceResp {
+    err: NotifyKeyValueError,
+    value: Vec<String>,
+}
+
+pub struct TraceMsg {
+    pub key: String,
+    pub resp_tx: mpsc::Sender<NkvTraceResp>,
+}
+
 pub struct BaseMsg {
     pub key: String,
     pub uuid: String,
@@ -58,6 +68,7 @@ pub struct Server {
     del_tx: mpsc::UnboundedSender<BaseMsg>,
     sub_tx: mpsc::UnboundedSender<SubMsg>,
     unsub_tx: mpsc::UnboundedSender<BaseMsg>,
+    trace_tx: mpsc::UnboundedSender<TraceMsg>,
     cancel_rx: oneshot::Receiver<()>,
 }
 
@@ -71,6 +82,7 @@ impl Server {
         let (del_tx, mut del_rx) = mpsc::unbounded_channel::<BaseMsg>();
         let (sub_tx, mut sub_rx) = mpsc::unbounded_channel::<SubMsg>();
         let (unsub_tx, mut unsub_rx) = mpsc::unbounded_channel::<BaseMsg>();
+        let (trace_tx, mut trace_rx) = mpsc::unbounded_channel::<TraceMsg>();
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (usr_cancel_tx, mut usr_cancel_rx) = oneshot::channel();
 
@@ -102,6 +114,7 @@ impl Server {
             del_tx,
             sub_tx,
             unsub_tx,
+            trace_tx,
             cancel_rx,
         };
         let mut notifiers: HashMap<String, Notifier> = HashMap::new();
@@ -162,6 +175,31 @@ impl Server {
                        };
                        let _ = req.resp_tx.send(err).await;
                    }
+                   Some(req) = trace_rx.recv() => {
+                        match nkv.trace(&req.key).await {
+                            Ok(vals) => {
+                                if vals.len() > 0 {
+                                    let _ = req.resp_tx.send(NkvTraceResp {
+                                        value: vals,
+                                        err: NotifyKeyValueError::NoError
+                                    }).await;
+                                } else {
+                                    let _ = req.resp_tx.send(NkvTraceResp {
+                                        value: Vec::new(),
+                                        err: NotifyKeyValueError::NotFound
+                                    }).await;
+                                }
+
+                            },
+                            Err(_) => {
+                                let _ = req.resp_tx.send(NkvTraceResp {
+                                    value: Vec::new(),
+                                    err: NotifyKeyValueError::NotFound
+                                }).await;
+                            }
+                        }
+
+                   }
 
                    _ = &mut usr_cancel_rx => {
                        _ = cancel_tx.send(());
@@ -185,6 +223,7 @@ impl Server {
             let del_tx = self.del_tx();
             let sub_tx = self.sub_tx();
             let unsub_tx = self.unsub_tx();
+            let trace_tx = self.trace_tx();
 
             tokio::select! {
                 Ok((stream, _)) = listener.accept() => {
@@ -194,7 +233,8 @@ impl Server {
                         get_tx.clone(),
                         del_tx.clone(),
                         sub_tx.clone(),
-                        unsub_tx.clone()
+                        unsub_tx.clone(),
+                        trace_tx.clone()
                     )});
                 }
                 _ = &mut self.cancel_rx => {
@@ -211,6 +251,7 @@ impl Server {
         del_tx: mpsc::UnboundedSender<BaseMsg>,
         sub_tx: mpsc::UnboundedSender<SubMsg>,
         unsub_tx: mpsc::UnboundedSender<BaseMsg>,
+        trace_tx: mpsc::UnboundedSender<TraceMsg>,
     ) {
         let (read_half, write_half) = tokio::io::split(stream);
         let mut reader = BufReader::new(read_half);
@@ -236,7 +277,8 @@ impl Server {
             ServerRequest::Get(ref msg)
             | ServerRequest::Delete(ref msg)
             | ServerRequest::Subscribe(ref msg)
-            | ServerRequest::Unsubscribe(ref msg) => msg.id.clone(),
+            | ServerRequest::Unsubscribe(ref msg)
+            | ServerRequest::Trace(ref msg) => msg.id.clone(),
         };
         let span = info_span!("handle_request", msg_id=%msg_id);
         let _guard = span.enter();
@@ -264,6 +306,11 @@ impl Server {
             }
             ServerRequest::Unsubscribe(msg) => {
                 Self::handle_unsub(writer, unsub_tx, msg)
+                    .instrument(span.clone())
+                    .await;
+            }
+            ServerRequest::Trace(msg) => {
+                Self::handle_trace(writer, trace_tx, msg)
                     .instrument(span.clone())
                     .await;
             }
@@ -409,6 +456,38 @@ impl Server {
         Self::write_response(ServerResponse::Base(resp), writer).await;
     }
 
+    async fn handle_trace(
+        writer: TcpWriter,
+        nkv_tx: mpsc::UnboundedSender<TraceMsg>,
+        msg: BaseMessage,
+    ) {
+        let (get_resp_tx, mut get_resp_rx) = mpsc::channel(1);
+        let res = nkv_tx.send(TraceMsg {
+            key: msg.key,
+            resp_tx: get_resp_tx,
+        });
+        if let Err(e) = res {
+            error!("failed sending message to channel: {}", e);
+            let resp = request_msg::BaseResp {
+                id: msg.id,
+                status: false, // failed to send request
+            };
+            return Self::write_response(ServerResponse::Base(resp), writer).await;
+        }
+
+        let nkv_resp = get_resp_rx.recv().await.unwrap();
+        let data: Vec<String> = nkv_resp.value.into_iter().collect();
+        let status = match nkv_resp.err {
+            NotifyKeyValueError::NoError => true,
+            _ => false,
+        };
+        let resp = request_msg::DataResp {
+            base: request_msg::BaseResp { id: msg.id, status },
+            data,
+        };
+        Self::write_response(ServerResponse::Trace(resp), writer).await;
+    }
+
     async fn write_response(reply: ServerResponse, mut writer: TcpWriter) {
         let msg = format!("{}\n", reply.to_string());
         if let Err(e) = writer.write_all(&msg.into_bytes()).await {
@@ -435,6 +514,9 @@ impl Server {
     }
     pub fn unsub_tx(&self) -> mpsc::UnboundedSender<BaseMsg> {
         self.unsub_tx.clone()
+    }
+    pub fn trace_tx(&self) -> mpsc::UnboundedSender<TraceMsg> {
+        self.trace_tx.clone()
     }
 }
 
@@ -544,7 +626,7 @@ mod tests {
         // Give time for server to get up
         // TODO: need to create a notification channel
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        let mut client = NkvClient::new(url.to_str().unwrap());
+        let mut client = NkvClient::new(url.to_str().unwrap(), "0".to_string());
 
         let value: Box<[u8]> = Box::new([9, 7, 3, 4, 5]);
         let key = "test_2_key1".to_string();
@@ -572,14 +654,13 @@ mod tests {
             })
         );
 
-        let err_get_resp = client.get("non-existent-key".to_string()).await.unwrap();
-        assert_eq!(
-            err_get_resp,
-            request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: "0".to_string(),
-                status: false,
-            })
-        );
+        if let Ok(ServerResponse::Data(err_get_resp)) =
+            client.get("non-existent-key".to_string()).await
+        {
+            assert_eq!(err_get_resp.base.status, false);
+        } else {
+            panic!("Wrong response");
+        }
 
         let (tx, mut rx) = mpsc::channel(1);
         let send_to_channel = Box::new(move |value| {
@@ -675,13 +756,10 @@ mod tests {
             panic!("Expected value");
         }
 
-        let del_get_resp = client.get(key.clone()).await.unwrap();
-        assert_eq!(
-            del_get_resp,
-            request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: "0".to_string(),
-                status: false,
-            })
-        );
+        if let Ok(ServerResponse::Data(del_get_resp)) = client.get(key.clone()).await {
+            assert_eq!(del_get_resp.base.status, false);
+        } else {
+            panic!("Wrong response");
+        }
     }
 }

@@ -38,6 +38,7 @@ pub enum ServerRequest {
     Delete(BaseMessage),
     Subscribe(BaseMessage),
     Unsubscribe(BaseMessage),
+    Trace(BaseMessage),
 }
 
 // Since the protocol is valid UTF-8 String, we use standard Rust traits
@@ -76,6 +77,11 @@ impl fmt::Display for ServerRequest {
                 key,
                 client_uuid,
             }) => write!(f, "UNSUB {} {} {}", id, client_uuid, key),
+            Self::Trace(BaseMessage {
+                id,
+                key,
+                client_uuid,
+            }) => write!(f, "TRACE {} {} {}", id, client_uuid, key),
         }
     }
 }
@@ -148,6 +154,11 @@ impl FromStr for ServerRequest {
                 client_uuid,
                 key,
             })),
+            "TRACE" => Ok(Self::Trace(BaseMessage {
+                id,
+                client_uuid,
+                key,
+            })),
             _ => Err(SerializingError::UnknownCommand),
         }
     }
@@ -208,40 +219,96 @@ impl PartialEq for BaseResp {
     }
 }
 
-pub struct DataResp {
-    pub base: BaseResp,
-    pub data: HashMap<String, Vec<u8>>,
+pub trait Marshalable: Sized {
+    fn marshal(&self) -> String;
+    fn debug(&self) -> String;
+    fn unmarshal(input_str: &str) -> Result<Self, SerializingError>;
 }
 
-impl fmt::Display for DataResp {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.base)?;
-
-        for (key, val) in self.data.iter() {
-            // note: use same engine in decode as well
-            let engine = base64::engine::general_purpose::STANDARD;
-            let value = engine.encode(val);
-            write!(f, " {} {}", key, value)?
+// used in Get Response
+impl Marshalable for HashMap<String, Vec<u8>> {
+    fn marshal(&self) -> String {
+        let mut result = String::new();
+        let engine = base64::engine::general_purpose::STANDARD;
+        for (key, val) in self.iter() {
+            let encoded_val = engine.encode(val);
+            result.push_str(&format!(" {} {}", key, encoded_val));
         }
-        Ok(())
+        result
     }
-}
-
-impl fmt::Debug for DataResp {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.base)?;
-
-        for (key, val) in self.data.iter() {
+    fn debug(&self) -> String {
+        let mut result = String::new();
+        for (key, val) in self.iter() {
             match String::from_utf8(val.clone()) {
-                Ok(s) => write!(f, " {} {}", key, s)?,
-                Err(_) => write!(f, " {} {:?}", key, val)?,
+                Ok(s) => result.push_str(&format!(" {} {}", key, s)),
+                Err(_) => result.push_str(&format!(" {} {:?}", key, val)),
             }
         }
-        Ok(())
+        result
+    }
+    fn unmarshal(input_str: &str) -> Result<Self, SerializingError> {
+        let parts: Vec<&str> = input_str.split_whitespace().collect();
+
+        if parts.len() % 2 != 0 {
+            return Err(SerializingError::InvalidInput);
+        }
+
+        let mut data = HashMap::new();
+        let engine = base64::engine::general_purpose::STANDARD;
+        for pair in parts.chunks(2) {
+            let key = pair[0].to_string();
+            let value = engine
+                .decode(pair[1])
+                .map_err(|_| SerializingError::ParseError)?;
+            data.insert(key, value);
+        }
+        Ok(data)
     }
 }
 
-impl FromStr for DataResp {
+impl Marshalable for Vec<String> {
+    fn marshal(&self) -> String {
+        let mut result = String::new();
+        for key in self.iter() {
+            result.push_str(&format!(" {}", key));
+        }
+        result
+    }
+    fn debug(&self) -> String {
+        let mut result = String::new();
+        for key in self.iter() {
+            result.push_str(&format!(" {:?}", key));
+        }
+        result
+    }
+    fn unmarshal(input_str: &str) -> Result<Self, SerializingError> {
+        Ok(input_str
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect())
+    }
+}
+
+pub struct DataResp<T: Marshalable + PartialEq> {
+    pub base: BaseResp,
+    pub data: T,
+}
+
+impl<T: Marshalable + PartialEq> fmt::Display for DataResp<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.base)?;
+        write!(f, "{}", self.data.marshal())
+    }
+}
+
+impl<T: Marshalable + PartialEq> fmt::Debug for DataResp<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.base)?;
+        write!(f, "{}", self.data.debug())
+    }
+}
+
+impl<T: Marshalable + PartialEq> FromStr for DataResp<T> {
     type Err = SerializingError;
 
     fn from_str(input_str: &str) -> Result<Self, Self::Err> {
@@ -271,21 +338,13 @@ impl FromStr for DataResp {
             return Err(SerializingError::InvalidInput);
         }
 
-        let mut data = HashMap::new();
-        let engine = base64::engine::general_purpose::STANDARD;
-        for pair in parts.chunks(2) {
-            let key = pair[0].to_string();
-            let value = engine
-                .decode(pair[1])
-                .map_err(|_| SerializingError::ParseError)?;
-            data.insert(key, value);
-        }
+        let data = T::unmarshal(&parts.join(" "))?;
 
         Ok(Self { base, data })
     }
 }
 
-impl PartialEq for DataResp {
+impl<T: Marshalable + PartialEq> PartialEq for DataResp<T> {
     fn eq(&self, other: &Self) -> bool {
         self.base == other.base && self.data == other.data
     }
@@ -293,7 +352,8 @@ impl PartialEq for DataResp {
 
 pub enum ServerResponse {
     Base(BaseResp),
-    Data(DataResp),
+    Data(DataResp<HashMap<String, Vec<u8>>>),
+    Trace(DataResp<Vec<String>>),
 }
 
 impl PartialEq for ServerResponse {
@@ -310,10 +370,13 @@ impl fmt::Display for ServerResponse {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Base(resp) => {
-                write!(f, "{}", resp)
+                write!(f, "base {}", resp)
             }
             Self::Data(resp) => {
-                write!(f, "{}", resp)
+                write!(f, "data {}", resp)
+            }
+            Self::Trace(resp) => {
+                write!(f, "trace {}", resp)
             }
         }
     }
@@ -328,6 +391,9 @@ impl fmt::Debug for ServerResponse {
             Self::Data(resp) => {
                 write!(f, "{:?}", resp)
             }
+            Self::Trace(resp) => {
+                write!(f, "{:?}", resp)
+            }
         }
     }
 }
@@ -336,16 +402,28 @@ impl FromStr for ServerResponse {
     type Err = SerializingError;
 
     fn from_str(input_str: &str) -> Result<Self, Self::Err> {
-        match input_str.split_whitespace().count() {
-            2 => {
-                let base_resp: BaseResp = input_str.parse()?;
-                Ok(ServerResponse::Base(base_resp))
-            }
-            _ => {
-                let data_resp: DataResp = input_str.parse()?;
-                Ok(ServerResponse::Data(data_resp))
+        if let Some(first_space_index) = input_str.find(char::is_whitespace) {
+            let first_word = &input_str[..first_space_index];
+            let tail = input_str[first_space_index..].trim_start();
+
+            match first_word {
+                "base" => {
+                    let base_resp: BaseResp = tail.parse()?;
+                    return Ok(ServerResponse::Base(base_resp));
+                }
+                "data" => {
+                    let data_resp: DataResp<HashMap<String, Vec<u8>>> = tail.parse()?;
+                    return Ok(ServerResponse::Data(data_resp));
+                }
+                "trace" => {
+                    let data_resp: DataResp<Vec<String>> = tail.parse()?;
+                    return Ok(ServerResponse::Trace(data_resp));
+                }
+                _ => {}
             }
         }
+        // No whitespace found — the whole string is one word
+        return Err(SerializingError::Missing("type".to_string()));
     }
 }
 
@@ -578,7 +656,7 @@ mod tests {
             id: id.clone(),
             status: true,
         });
-        assert_eq!(resp.to_string(), format!("{} OK", &id));
+        assert_eq!(resp.to_string(), format!("base {} OK", &id));
 
         let key = "key".to_string();
         let mut data: HashMap<String, Vec<u8>> = HashMap::new();
@@ -592,7 +670,10 @@ mod tests {
         });
         let engine = base64::engine::general_purpose::STANDARD;
         let value = engine.encode(&data[&key]);
-        assert_eq!(resp.to_string(), format!("{} FAILED {} {}", id, key, value))
+        assert_eq!(
+            resp.to_string(),
+            format!("data {} FAILED {} {}", id, key, value)
+        )
     }
 
     #[test]
@@ -602,7 +683,7 @@ mod tests {
             id: id.clone(),
             status: true,
         });
-        let got: ServerResponse = format!("{} OK", &id).parse().unwrap();
+        let got: ServerResponse = format!("base {} OK", &id).parse().unwrap();
         assert_eq!(got, expected);
 
         let key = "key".to_string();
@@ -610,7 +691,9 @@ mod tests {
         data.insert(key.clone(), vec![1, 2, 3, 4]);
         let engine = base64::engine::general_purpose::STANDARD;
         let value = engine.encode(&data[&key]);
-        let got: ServerResponse = format!("{} FAILED {} {}", id, key, value).parse().unwrap();
+        let got: ServerResponse = format!("data {} FAILED {} {}", id, key, value)
+            .parse()
+            .unwrap();
         let expected = ServerResponse::Data(DataResp {
             base: BaseResp {
                 id: id.clone(),
