@@ -57,10 +57,15 @@ impl NkvClient {
     // unsubscribe from non-existent subscription
     const LOCAL_UUID: &'static str = "0";
 
-    pub fn new(addr: &str) -> Self {
+    pub fn new(addr: &str, client_uuid: String) -> Self {
+        let client_uuid = if client_uuid == "" {
+            Self::uuid()
+        } else {
+            client_uuid
+        };
         Self {
             addr: addr.to_string(),
-            client_uuid: Self::uuid(),
+            client_uuid,
             subscriptions: HashMap::new(),
         }
     }
@@ -154,6 +159,15 @@ impl NkvClient {
             id: self.client_uuid.clone(),
             status: true,
         }))
+    }
+
+    pub async fn trace(&mut self, key: String) -> tokio::io::Result<ServerResponse> {
+        let req = ServerRequest::Trace(BaseMessage {
+            id: Self::uuid(),
+            client_uuid: self.client_uuid.clone(),
+            key,
+        });
+        self.send_request(&req).await
     }
 
     async fn send_request(&mut self, request: &ServerRequest) -> tokio::io::Result<ServerResponse> {
