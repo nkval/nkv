@@ -278,7 +278,8 @@ impl Server {
             | ServerRequest::Delete(ref msg)
             | ServerRequest::Subscribe(ref msg)
             | ServerRequest::Unsubscribe(ref msg)
-            | ServerRequest::Trace(ref msg) => msg.id.clone(),
+            | ServerRequest::Trace(ref msg)
+            | ServerRequest::Health(ref msg) => msg.id.clone(),
         };
         let span = info_span!("handle_request", msg_id=%msg_id);
         let _guard = span.enter();
@@ -311,6 +312,11 @@ impl Server {
             }
             ServerRequest::Trace(msg) => {
                 Self::handle_trace(writer, trace_tx, msg)
+                    .instrument(span.clone())
+                    .await;
+            }
+            ServerRequest::Health(msg) => {
+                Self::handle_health(writer, msg)
                     .instrument(span.clone())
                     .await;
             }
@@ -486,6 +492,16 @@ impl Server {
             data,
         };
         Self::write_response(ServerResponse::Trace(resp), writer).await;
+    }
+    async fn handle_health(writer: TcpWriter, msg: BaseMessage) {
+        Self::write_response(
+            ServerResponse::Base(request_msg::BaseResp {
+                id: msg.id,
+                status: true,
+            }),
+            writer,
+        )
+        .await;
     }
 
     async fn write_response(reply: ServerResponse, mut writer: TcpWriter) {
