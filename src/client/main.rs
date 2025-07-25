@@ -173,6 +173,12 @@ async fn main() -> Result<()> {
                                 println!("SUBSCRIBE requires a key");
                             }
                         }
+                        "health" => {
+                            let start = Instant::now();
+                            let resp = client.health().await.unwrap();
+                            let elapsed = start.elapsed();
+                            println!("Request took: {:.2?}\n{:?}", elapsed, resp);
+                        }
                         "quit" => {
                             break;
                         }

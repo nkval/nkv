@@ -169,6 +169,14 @@ impl NkvClient {
         });
         self.send_request(&req).await
     }
+    pub async fn health(&mut self) -> tokio::io::Result<ServerResponse> {
+        let req = ServerRequest::Health(BaseMessage {
+            id: Self::uuid(),
+            key: "HK".to_string(),
+            client_uuid: self.client_uuid.clone(),
+        });
+        self.send_request(&req).await
+    }
 
     async fn send_request(&mut self, request: &ServerRequest) -> tokio::io::Result<ServerResponse> {
         let stream = UnixStream::connect(&self.addr).await?;
