@@ -39,6 +39,7 @@ pub enum ServerRequest {
     Subscribe(BaseMessage),
     Unsubscribe(BaseMessage),
     Trace(BaseMessage),
+    Health(BaseMessage),
 }
 
 // Since the protocol is valid UTF-8 String, we use standard Rust traits
@@ -82,6 +83,11 @@ impl fmt::Display for ServerRequest {
                 key,
                 client_uuid,
             }) => write!(f, "TRACE {} {} {}", id, client_uuid, key),
+            Self::Health(BaseMessage {
+                id,
+                key: _,
+                client_uuid,
+            }) => write!(f, "HEALTH {} {} HK", id, client_uuid),
         }
     }
 }
@@ -136,13 +142,13 @@ impl FromStr for ServerRequest {
             }
             "GET" => Ok(Self::Get(BaseMessage {
                 id,
-                client_uuid,
                 key,
+                client_uuid,
             })),
             "DEL" => Ok(Self::Delete(BaseMessage {
                 id,
-                client_uuid,
                 key,
+                client_uuid,
             })),
             "SUB" => Ok(Self::Subscribe(BaseMessage {
                 id,
@@ -158,6 +164,11 @@ impl FromStr for ServerRequest {
                 id,
                 client_uuid,
                 key,
+            })),
+            "HEALTH" => Ok(Self::Health(BaseMessage {
+                id,
+                key,
+                client_uuid,
             })),
             _ => Err(SerializingError::UnknownCommand),
         }
