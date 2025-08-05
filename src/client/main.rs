@@ -132,8 +132,8 @@ async fn main() -> Result<()> {
                                             elapsed, resp.base, trie
                                         )
                                     }
-                                    ServerResponse::Trace(resp) => {
-                                        println!("Request took: {:.2?}\n{:?}", elapsed, resp)
+                                    _ => {
+                                        println!("Wrong response!")
                                     }
                                 };
                             } else {
