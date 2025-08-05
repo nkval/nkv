@@ -279,7 +279,8 @@ impl Server {
             | ServerRequest::Subscribe(ref msg)
             | ServerRequest::Unsubscribe(ref msg)
             | ServerRequest::Trace(ref msg)
-            | ServerRequest::Health(ref msg) => msg.id.clone(),
+            | ServerRequest::Health(ref msg)
+            | ServerRequest::Version(ref msg) => msg.id.clone(),
         };
         let span = info_span!("handle_request", msg_id=%msg_id);
         let _guard = span.enter();
@@ -317,6 +318,11 @@ impl Server {
             }
             ServerRequest::Health(msg) => {
                 Self::handle_health(writer, msg)
+                    .instrument(span.clone())
+                    .await;
+            }
+            ServerRequest::Version(msg) => {
+                Self::handle_version(writer, msg)
                     .instrument(span.clone())
                     .await;
             }
@@ -504,6 +510,17 @@ impl Server {
         .await;
     }
 
+    async fn handle_version(writer: TcpWriter, msg: BaseMessage) {
+        let resp = ServerResponse::Version(request_msg::DataResp::<String> {
+            base: request_msg::BaseResp {
+                id: msg.id,
+                status: true,
+            },
+            data: env!("CARGO_PKG_VERSION").to_string(),
+        });
+        Self::write_response(resp, writer).await;
+    }
+
     async fn write_response(reply: ServerResponse, mut writer: TcpWriter) {
         let msg = format!("{}\n", reply.to_string());
         if let Err(e) = writer.write_all(&msg.into_bytes()).await {
@@ -542,6 +559,7 @@ mod tests {
     use crate::request_msg::Message;
     use crate::NkvClient;
     use tempfile::TempDir;
+    use tokio::time::{sleep, Duration};
     use tokio::{self, net::UnixStream};
 
     #[tokio::test]
@@ -639,10 +657,48 @@ mod tests {
             srv.serve().await;
         });
 
-        // Give time for server to get up
-        // TODO: need to create a notification channel
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         let mut client = NkvClient::new(url.to_str().unwrap(), "0".to_string());
+
+        let max_attempts = 20;
+        let delay = Duration::from_millis(5);
+        let mut is_healthy = false;
+
+        for _ in 1..=max_attempts {
+            match client.health().await {
+                Ok(resp) => {
+                    assert_eq!(
+                        resp,
+                        request_msg::ServerResponse::Base(request_msg::BaseResp {
+                            id: client.client_uuid.clone(),
+                            status: true,
+                        })
+                    );
+                    is_healthy = true;
+                    break;
+                }
+                Err(_) => {
+                    sleep(delay).await;
+                }
+            }
+        }
+
+        assert!(
+            is_healthy,
+            "Server did not become healthy after {} attempts",
+            max_attempts,
+        );
+
+        let resp = client.version().await.unwrap();
+        assert_eq!(
+            resp,
+            ServerResponse::Version(request_msg::DataResp::<String> {
+                base: request_msg::BaseResp {
+                    id: client.client_uuid.clone(),
+                    status: true,
+                },
+                data: env!("CARGO_PKG_VERSION").to_string(),
+            }),
+        );
 
         let value: Box<[u8]> = Box::new([9, 7, 3, 4, 5]);
         let key = "test_2_key1".to_string();
