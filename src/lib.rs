@@ -178,6 +178,15 @@ impl NkvClient {
         self.send_request(&req).await
     }
 
+    pub async fn version(&mut self) -> tokio::io::Result<ServerResponse> {
+        let req = ServerRequest::Version(BaseMessage {
+            id: self.client_uuid.clone(),
+            key: "DISCARDME".to_string(),
+            client_uuid: self.client_uuid.clone(),
+        });
+        self.send_request(&req).await
+    }
+
     async fn send_request(&mut self, request: &ServerRequest) -> tokio::io::Result<ServerResponse> {
         let stream = UnixStream::connect(&self.addr).await?;
         let (reader, mut writer) = stream.into_split();
@@ -194,10 +203,10 @@ impl NkvClient {
             .await
             .map_err(|_| tokio::io::Error::new(tokio::io::ErrorKind::Other, "read error"))?;
 
-        let response: ServerResponse = line.trim_end().parse().map_err(|_| {
+        let response: ServerResponse = line.trim_end().parse().map_err(|e| {
             tokio::io::Error::new(
                 tokio::io::ErrorKind::Other,
-                "failed to parse message to Server Response String",
+                format!("failed to parse message to Server Response: {}", e),
             )
         })?;
 
