@@ -40,6 +40,7 @@ pub enum ServerRequest {
     Unsubscribe(BaseMessage),
     Trace(BaseMessage),
     Health(BaseMessage),
+    Version(BaseMessage),
 }
 
 // Since the protocol is valid UTF-8 String, we use standard Rust traits
@@ -88,6 +89,11 @@ impl fmt::Display for ServerRequest {
                 key: _,
                 client_uuid,
             }) => write!(f, "HEALTH {} {} HK", id, client_uuid),
+            Self::Version(BaseMessage {
+                id,
+                key: _,
+                client_uuid,
+            }) => write!(f, "VERSION {} {} DISCARDME", id, client_uuid),
         }
     }
 }
@@ -166,6 +172,11 @@ impl FromStr for ServerRequest {
                 key,
             })),
             "HEALTH" => Ok(Self::Health(BaseMessage {
+                id,
+                key,
+                client_uuid,
+            })),
+            "VERSION" => Ok(Self::Version(BaseMessage {
                 id,
                 key,
                 client_uuid,
@@ -300,6 +311,18 @@ impl Marshalable for Vec<String> {
     }
 }
 
+impl Marshalable for String {
+    fn marshal(&self) -> String {
+        format!(" {}", self)
+    }
+    fn debug(&self) -> String {
+        format!(" {:?}", self)
+    }
+    fn unmarshal(input_str: &str) -> Result<Self, SerializingError> {
+        Ok(input_str.to_string())
+    }
+}
+
 pub struct DataResp<T: Marshalable + PartialEq> {
     pub base: BaseResp,
     pub data: T,
@@ -345,10 +368,6 @@ impl<T: Marshalable + PartialEq> FromStr for DataResp<T> {
 
         let parts: Vec<&str> = parts.collect();
 
-        if parts.len() % 2 != 0 {
-            return Err(SerializingError::InvalidInput);
-        }
-
         let data = T::unmarshal(&parts.join(" "))?;
 
         Ok(Self { base, data })
@@ -365,6 +384,7 @@ pub enum ServerResponse {
     Base(BaseResp),
     Data(DataResp<HashMap<String, Vec<u8>>>),
     Trace(DataResp<Vec<String>>),
+    Version(DataResp<String>),
 }
 
 impl PartialEq for ServerResponse {
@@ -372,6 +392,8 @@ impl PartialEq for ServerResponse {
         match (self, other) {
             (Self::Base(lhs), Self::Base(rhs)) => lhs == rhs,
             (Self::Data(lhs), Self::Data(rhs)) => lhs == rhs,
+            (Self::Trace(lhs), Self::Trace(rhs)) => lhs == rhs,
+            (Self::Version(lhs), Self::Version(rhs)) => lhs == rhs,
             _ => false,
         }
     }
@@ -389,6 +411,9 @@ impl fmt::Display for ServerResponse {
             Self::Trace(resp) => {
                 write!(f, "trace {}", resp)
             }
+            Self::Version(resp) => {
+                write!(f, "version {}", resp)
+            }
         }
     }
 }
@@ -403,6 +428,9 @@ impl fmt::Debug for ServerResponse {
                 write!(f, "{:?}", resp)
             }
             Self::Trace(resp) => {
+                write!(f, "{:?}", resp)
+            }
+            Self::Version(resp) => {
                 write!(f, "{:?}", resp)
             }
         }
@@ -429,6 +457,10 @@ impl FromStr for ServerResponse {
                 "trace" => {
                     let data_resp: DataResp<Vec<String>> = tail.parse()?;
                     return Ok(ServerResponse::Trace(data_resp));
+                }
+                "version" => {
+                    let data_resp: DataResp<String> = tail.parse()?;
+                    return Ok(ServerResponse::Version(data_resp));
                 }
                 _ => {}
             }
