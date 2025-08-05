@@ -57,6 +57,21 @@ async fn main() -> Result<()> {
     };
 
     let mut client = NkvClient::new(&sock_path, "nkv-client".to_string());
+    let client_version = env!("CARGO_PKG_VERSION");
+
+    match client.version().await? {
+        ServerResponse::Version(server_version) => {
+            if server_version.data != client_version {
+                println!(
+                    "Version missmatch! Server {}, client: {}",
+                    server_version.data, client_version
+                );
+            }
+        }
+        _ => {
+            println!("WARN: wrong response to version")
+        }
+    }
 
     let mut rl = DefaultEditor::new()?;
     if rl.load_history("history.txt").is_err() {
