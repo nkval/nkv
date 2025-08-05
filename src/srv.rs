@@ -707,7 +707,7 @@ mod tests {
         assert_eq!(
             resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: "0".to_string(),
+                id: client.client_uuid.clone(),
                 status: true,
             })
         );
@@ -719,7 +719,7 @@ mod tests {
             get_resp,
             request_msg::ServerResponse::Data(request_msg::DataResp {
                 base: request_msg::BaseResp {
-                    id: "0".to_string(),
+                    id: client.client_uuid.clone(),
                     status: true,
                 },
                 data,
@@ -750,7 +750,7 @@ mod tests {
         assert_eq!(
             sub_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: "0".to_string(),
+                id: client.client_uuid.clone(),
                 status: true,
             })
         );
@@ -767,7 +767,7 @@ mod tests {
         assert_eq!(
             unsub_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: "0".to_string(),
+                id: client.client_uuid.clone(),
                 status: true,
             })
         );
@@ -797,7 +797,7 @@ mod tests {
         assert_eq!(
             resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: "0".to_string(),
+                id: client.client_uuid.clone(),
                 status: true,
             })
         );
@@ -818,7 +818,7 @@ mod tests {
         assert_eq!(
             del_resp,
             request_msg::ServerResponse::Base(request_msg::BaseResp {
-                id: "0".to_string(),
+                id: client.client_uuid.clone(),
                 status: true,
             })
         );
