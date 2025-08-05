@@ -21,7 +21,7 @@ That said all four of them **can't contain space symbols**, KEY supports [keyspa
 CLIENT-ID is a convinient way to log requests from multiple clients in one place. Granted, REQUEST-ID
 is unique, but with CLIENT-ID it's easier to sort through request coming from a particular client.
 
-Supported commands are: PUT, GET, DEL, SUB, UNSUB.
+Supported commands are: PUT, GET, DEL, SUB, UNSUB, TRACE, HEALTH, VERSION
 For more information commands see [this](../README.md) section "What is it for"
 
 DATA section is used only in PUT command. It is base64-encoded string
@@ -29,6 +29,96 @@ DATA section is used only in PUT command. It is base64-encoded string
 REQUEST-ID for SUB command is also used to terminate that subscription via UNSUB command.
 
 For client implementation reference in Rust see [this](../src/lib.rs) struct NkvClient.
+
+#### Requests in detail
+
+##### **1. PUT**
+
+**Syntax:**
+
+`PUT REQUEST-ID CLIENT-ID KEY DATA`
+
+**Description:**
+Sets the value for a given `KEY` to `DATA`.
+- **DATA** is a base64-encoded string.
+- **CLIENT-ID** is used on the server side to log requests.
+
+##### **2. GET**
+
+**Syntax:**
+
+`GET REQUEST-ID CLIENT-ID KEY`
+
+**Description:**
+Retrieves the stored value for the given `KEY`.
+- Returns the result as a **key-value pair**, which allows differentiating between values when using [keyspaces](./KEYSPACE.md).
+
+##### **3. DEL**
+
+**Syntax:**
+
+`DEL REQUEST-ID CLIENT-ID KEY`
+
+**Description:**
+
+Deletes the stored value for the given `KEY`.
+
+##### **4. SUB**
+
+**Syntax:**
+
+`SUB REQUEST-ID CLIENT-ID KEY`
+
+**Description:**
+Subscribes the client to receive updates for the given `KEY`.
+- Supports [keyspaces](./KEYSPACE.md).
+- Updates are sent to the **same socket** (implementation may vary depending on the transport layer).
+
+##### **5. UNSUB**
+
+**Syntax:**
+
+`UNSUB REQUEST-ID CLIENT-ID KEY`
+
+**Description:**
+Unsubscribes the client from receiving updates for the given `KEY`.
+
+##### **6. TRACE**
+
+**Syntax:**
+`TRACE REQUEST-ID CLIENT-ID KEY`
+
+**Description:**
+Returns a list of all `CLIENT-IDs` subscribed to the given `KEY` or any key above it in the hierarchy.
+
+
+**Example key hierarchy:**
+
+`keyspace1.keyspace2.keyspace3.key`
+
+- If `client-1` is subscribed to `keyspace1` and `client-2` is subscribed to `keyspace3`:
+    - `TRACE key` → returns `client-1` and `client-2`
+    - `TRACE keyspace2` → returns `client-1`
+
+##### **7. HEALTH**
+
+**Syntax:**
+
+`HEALTH REQUEST-ID CLIENT-ID KEY`
+
+**Description:**
+Checks server health status.
+- Always returns `OK` if the server is healthy.
+
+
+##### **8. VERSION**
+
+**Syntax:**
+
+`VERSION REQUEST-ID CLIENT-ID KEY`
+
+**Description:**
+Returns the server version as specified in `cargo`.
 
 #### Example of reqests:
 
@@ -50,7 +140,7 @@ DEL request-id-4 client-id-1 FOO
 Responses follow simple structure as well
 
 ```
-REQUEST-ID (OK|FAILED) (DATA)
+(base|data|trace|version) REQUEST-ID (OK|FAILED) (DATA)
 ```
 
 DATA are space separated base46-encoded optional strings
