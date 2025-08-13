@@ -13,7 +13,7 @@ dirs-next = "2.0.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"] }
 tracing-appender = "0.2"
 tracing = "0.1.41"
-rustyline = "16.0.0"
+rustyline-async = "0.4.7"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
@@ -40,3 +40,4 @@ strip = true  # Automatically strip symbols from the binary
 # opt-level = "z"  # Optimize for size.
 lto = true
 codegen-units = 1
+# debug = "line-tables-only"
