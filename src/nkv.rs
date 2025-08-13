@@ -218,13 +218,13 @@ impl<P: StorageEngine> NkvCore<P> {
         });
 
         if let Some(val) = self.notifiers.get_mut(key, capture_and_push).await {
-            {
-                let vec_lock = vector.lock().await;
-                for n_arc in vec_lock.iter() {
-                    n_arc.lock().await.send_close(key.to_string())?;
-                }
-            }
             val.lock().await.unsubscribe_all(key)?;
+        }
+        {
+            let vec_lock = vector.lock().await;
+            for n_arc in vec_lock.iter() {
+                n_arc.lock().await.send_close(key.to_string())?;
+            }
         }
         self.storage.delete(key).map_err(|err| {
             error!("failed to delete {} from storage: {}", key, err);
@@ -503,6 +503,19 @@ mod tests {
         let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
         expected.insert("ks1.ks2.ks4".to_string(), Arc::from(new_data));
         assert_eq!(result, expected);
+
+        nkv.delete("ks1.ks2.ks4").await.unwrap();
+
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg,
+                Message::Close {
+                    key: "ks1.ks2.ks4".to_string(),
+                }
+            )
+        } else {
+            panic!("Should recieve msg");
+        }
 
         Ok(())
     }
