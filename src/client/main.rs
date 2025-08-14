@@ -12,6 +12,8 @@ use rustyline_async::SharedWriter;
 use rustyline_async::{Readline, ReadlineEvent};
 use std::io::Write;
 
+use serde_json as json;
+
 const DEFAULT_URL: &str = "/tmp/nkv/nkv.sock";
 const HELP_MESSAGE: &str = "nkv-client [OPTIONS]
 Run the notify key-value (nkv) client.
@@ -136,7 +138,8 @@ async fn handle_command(
                     let start = Instant::now();
                     let resp = client.get(_key.to_string()).await.unwrap();
                     let elapsed = start.elapsed();
-                    let _ = writeln!(stdout, "Request took: {:.2?}\n{:?}", elapsed, resp);
+                    let _ = writeln!(stdout, "Request took: {:.2?}", elapsed);
+                    pretty_print_server_response(resp, stdout);
                 } else {
                     let _ = writeln!(stdout, "GET requires a key");
                 }
@@ -237,4 +240,28 @@ async fn handle_command(
         }
     }
     return false;
+}
+
+fn pretty_print_server_response(d: ServerResponse, stdout: &mut SharedWriter) {
+    // use stdout do directly send string, without keeping them in memory
+    match d {
+        ServerResponse::Base(_) | ServerResponse::Trace(_) | ServerResponse::Version(_) => {
+            let _ = writeln!(stdout, "{}", d.to_string());
+        }
+        // only Data type from Get can contain JSON
+        ServerResponse::Data(resp) => {
+            let _ = writeln!(stdout, "{}", resp.base);
+            for (k, v) in resp.data {
+                let printable_string = match String::from_utf8(v.clone()) {
+                    Ok(s) => s,
+                    Err(_) => format!("{:?}", v),
+                };
+                let data_str = match json::from_str::<json::Value>(&printable_string) {
+                    Ok(val) => json::to_string_pretty(&val).unwrap_or_else(|_| printable_string),
+                    Err(_) => printable_string,
+                };
+                let _ = writeln!(stdout, "{} {}\n", k, data_str);
+            }
+        }
+    }
 }
