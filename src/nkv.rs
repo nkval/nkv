@@ -199,6 +199,12 @@ impl<P: StorageEngine> NkvCore<P> {
                 "put does not support wildcards".to_string(),
             ));
         }
+        if !Self::is_key_correct(key) {
+            return Err(NotifyKeyValueError::WrongKey(format!(
+                "key {} is invalid",
+                key
+            )));
+        }
         let vector: Arc<Mutex<Vec<N>>> = Arc::new(Mutex::new(Vec::new()));
         let vc = Arc::clone(&vector);
 
@@ -432,6 +438,22 @@ impl<P: StorageEngine> NkvCore<P> {
             }
         }
         return Ok(cloned_vec);
+    }
+
+    fn is_key_correct(key: &str) -> bool {
+        // to speed things up, we match key to a regexp, downside is that
+        // error is not self explainable
+        use regex::Regex;
+
+        // ^(
+        //   \*                        --> wildcard alone
+        //   |                         --> OR
+        //   [A-Za-z0-9_]+             --> first key
+        //   (\.[A-Za-z0-9_]+)*        --> optional .key segments
+        //   (\.\*)?                   --> optional .*
+        // )$
+        let re = Regex::new(r"^(\*|[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*(\.\*)?)$").unwrap();
+        re.is_match(key)
     }
 }
 
@@ -843,6 +865,329 @@ mod tests {
 
         let result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
         assert!(!result.contains(&"uuid4".to_string()));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_wildcard_delete() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        let data1: Box<[u8]> = Box::new([1, 2, 3]);
+        let data2: Box<[u8]> = Box::new([4, 5, 6]);
+        let data3: Box<[u8]> = Box::new([7, 8, 9]);
+        let data4: Box<[u8]> = Box::new([10, 11, 12]);
+
+        nkv.put("ks1.child1", data1.clone()).await?;
+        nkv.put("ks1.child2", data2.clone()).await?;
+        nkv.put("ks1.deep.child", data3.clone()).await?;
+        nkv.put("ks2.child", data4.clone()).await?;
+
+        // Delete all children of ks1
+        nkv.delete("ks1.*").await?;
+
+        // ks1 children should be gone
+        assert_eq!(nkv.get("ks1.child1"), HashMap::new());
+        assert_eq!(nkv.get("ks1.child2"), HashMap::new());
+        assert_eq!(nkv.get("ks1.deep.child"), HashMap::new());
+
+        // ks2.child should still exist
+        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
+        expected.insert("ks2.child".to_string(), Arc::from(data4));
+        assert_eq!(nkv.get("ks2.child"), expected);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_wildcard_delete_all() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        let data1: Box<[u8]> = Box::new([1, 2, 3]);
+        let data2: Box<[u8]> = Box::new([4, 5, 6]);
+
+        nkv.put("key1", data1.clone()).await?;
+        nkv.put("ks1.child", data2.clone()).await?;
+
+        // Delete everything
+        nkv.delete("*").await?;
+
+        assert_eq!(nkv.get("key1"), HashMap::new());
+        assert_eq!(nkv.get("ks1.child"), HashMap::new());
+        assert_eq!(nkv.get("*"), HashMap::new());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_key_with_only_dots() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        let data: Box<[u8]> = Box::new([1, 2, 3]);
+
+        // Test keys that are just dots
+        assert!(nkv.put(".", data.clone()).await.is_err());
+        assert!(nkv.put("..", data.clone()).await.is_err());
+        assert!(nkv.put("...", data.clone()).await.is_err());
+
+        let result = nkv.get(".");
+        assert!(result.is_empty());
+
+        let result = nkv.get("..");
+        assert!(result.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_put_empty_key() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        let data: Box<[u8]> = Box::new([1, 2, 3]);
+
+        // Test keys that are just dots
+        assert!(nkv.put("", data.clone()).await.is_err());
+
+        let result = nkv.get("*");
+        assert!(result.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_to_nonexistent_key() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        // Subscribe to key that doesn't exist yet
+        let mut rx = nkv.subscribe("future.key", "uuid1".to_string()).await?;
+
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(msg, Message::Hello)
+        } else {
+            panic!("Should receive hello msg");
+        }
+
+        // Now create the key
+        let data: Box<[u8]> = Box::new([1, 2, 3]);
+        nkv.put("future.key", data.clone()).await?;
+
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg,
+                Message::Update {
+                    key: "future.key".to_string(),
+                    value: data.clone()
+                }
+            )
+        } else {
+            panic!("Should receive update msg");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_multiple_subscribers_same_key() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        let data: Box<[u8]> = Box::new([1, 2, 3]);
+        nkv.put("shared.key", data.clone()).await?;
+
+        // Multiple subscribers to same key
+        let mut rx1 = nkv.subscribe("shared.key", "uuid1".to_string()).await?;
+        let mut rx2 = nkv.subscribe("shared.key", "uuid2".to_string()).await?;
+        let mut rx3 = nkv.subscribe("shared.key", "uuid3".to_string()).await?;
+
+        // Consume hello messages
+        rx1.recv().await;
+        rx2.recv().await;
+        rx3.recv().await;
+
+        // Update the key
+        let new_data: Box<[u8]> = Box::new([4, 5, 6]);
+        nkv.put("shared.key", new_data.clone()).await?;
+
+        // All should receive update
+        for rx in [&mut rx1, &mut rx2, &mut rx3] {
+            if let Some(msg) = rx.recv().await {
+                assert_eq!(
+                    msg,
+                    Message::Update {
+                        key: "shared.key".to_string(),
+                        value: new_data.clone()
+                    }
+                )
+            } else {
+                panic!("Should receive update msg");
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_subscribe_unsubscribe_same_uuid_different_keys() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        let data1: Box<[u8]> = Box::new([1, 2, 3]);
+        let data2: Box<[u8]> = Box::new([4, 5, 6]);
+        nkv.put("key1", data1.clone()).await?;
+        nkv.put("key2", data2.clone()).await?;
+
+        // Same UUID subscribing to different keys
+        let mut rx1 = nkv.subscribe("key1", "same_uuid".to_string()).await?;
+        let mut rx2 = nkv.subscribe("key2", "same_uuid".to_string()).await?;
+
+        // Consume hello messages
+        rx1.recv().await;
+        rx2.recv().await;
+
+        // Unsubscribe from key1 only
+        nkv.unsubscribe("key1", "same_uuid".to_string()).await?;
+
+        if let Some(msg) = rx1.recv().await {
+            assert_eq!(
+                msg,
+                Message::Close {
+                    key: "key1".to_string()
+                }
+            )
+        } else {
+            panic!("Should receive close msg");
+        }
+
+        // Update key2 - should still receive notification
+        let new_data: Box<[u8]> = Box::new([7, 8, 9]);
+        nkv.put("key2", new_data.clone()).await?;
+
+        if let Some(msg) = rx2.recv().await {
+            assert_eq!(
+                msg,
+                Message::Update {
+                    key: "key2".to_string(),
+                    value: new_data.clone()
+                }
+            )
+        } else {
+            panic!("Should receive update msg");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_delete_notifies_subscribers() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        let data: Box<[u8]> = Box::new([1, 2, 3]);
+        nkv.put("temp.key", data.clone()).await?;
+
+        // Subscribe to parent keyspace
+        let mut rx = nkv.subscribe("temp", "uuid1".to_string()).await?;
+        rx.recv().await; // consume hello
+
+        // Delete the key
+        nkv.delete("temp.key").await?;
+
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg,
+                Message::Close {
+                    key: "temp.key".to_string()
+                }
+            )
+        } else {
+            panic!("Should receive close msg");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_wildcard_delete_notifies_subscribers() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        let data1: Box<[u8]> = Box::new([1, 2, 3]);
+        let data2: Box<[u8]> = Box::new([4, 5, 6]);
+        nkv.put("batch.key1", data1.clone()).await?;
+        nkv.put("batch.key2", data2.clone()).await?;
+
+        let mut rx = nkv.subscribe("batch", "uuid1".to_string()).await?;
+        rx.recv().await; // consume hello
+
+        // Wildcard delete
+        nkv.delete("batch.*").await?;
+
+        if let Some(msg) = rx.recv().await {
+            if let Message::Close { key } = msg {
+                assert_eq!(key, "batch.*");
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_1mb_data() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        // Test with large data (1MB)
+        let large_data: Box<[u8]> = vec![42u8; 1024 * 1024].into_boxed_slice();
+        nkv.put("large.data", large_data.clone()).await?;
+
+        let result = nkv.get("large.data");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["large.data"].len(), 1024 * 1024);
+
+        // Test subscription with large data
+        let mut rx = nkv.subscribe("large.data", "uuid1".to_string()).await?;
+        rx.recv().await; // consume hello
+
+        let new_large_data: Box<[u8]> = vec![84u8; 1024 * 1024].into_boxed_slice();
+        nkv.put("large.data", new_large_data.clone()).await?;
+
+        if let Some(msg) = rx.recv().await {
+            if let Message::Update { key, value } = msg {
+                assert_eq!(key, "large.data");
+                assert_eq!(value.len(), 1024 * 1024);
+            } else {
+                panic!("Should receive update msg");
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_nonexistent() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let mut nkv = NkvCore::new(storage)?;
+
+        assert!(nkv
+            .unsubscribe("nonexistent.key", "uuid1".to_string())
+            .await
+            .is_err());
 
         Ok(())
     }
