@@ -12,7 +12,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::errors::NotifyKeyValueError;
+use crate::errors::{NotifierError, NotifyKeyValueError};
 use crate::request_msg::Message;
 use crate::traits::StorageEngine;
 use crate::trie::{Trie, TrieNode};
@@ -112,35 +112,106 @@ impl Notification {
 
 type N = Arc<Mutex<Notification>>;
 
+/// NkvCore - The Heart of the Hierarchical Key-Value System
+///
+/// ## Overview
+/// NkvCore is the core component of the entire system. In essence, it provides a
+/// hierarchical key-value storage with notifications, built on top of a pluggable
+/// storage trait architecture.
+///
+/// ## Architecture Flexibility
+/// The storage trait design means you can implement any storage strategy you want:
+/// - File-based storage
+/// - Database backends
+/// - In-memory storage
+/// - Custom implementations
+///
+/// You can plug these into either:
+/// - Your own binary directly
+/// - The NkvCore process for inter-thread communication within a single binary
+///
+/// ## Storage Abstraction
+/// The storage layer is intentionally simple and doesn't know about hierarchy:
+/// - Store a value for a given unique key
+/// - Retrieve a value by key
+/// - Delete a value by key
+///
+/// ## Hierarchical Structure
+/// The Trie is the underlying data structure that handles hierarchical relationships.
+/// For more details, see: `../docs/KEYSPACES.md`
+///
+/// ## Dual-Tree Architecture
+/// Notifications and objects are managed separately for performance reasons:
+///
+/// ### Why Separate Trees?
+/// - **Notifications**: Managed by `notifiers` - references to notification handlers
+/// - **Objects**: Managed by `objects` - references to storage keys for the StorageEngine
+///
+/// ### Performance Benefits
+/// If notifications and files were stored together:
+/// - Combined traversal: `O(M + N)` where M = notifications, N = files
+///
+/// With separate trees:
+/// - Sequential traversal: `O(M) + O(N)`
+/// - More efficient when you only need one type of data
+///
+/// ### Usage Patterns
+/// - **Objects tree**: Traversed to get storage keys for the StorageEngine to handle files
+/// - **Notifiers tree**: Traversed when updating subscribers about changes
+///
+/// ## Core API
+/// NKV provides five primary operations:
+/// - `GET` - Retrieve values
+/// - `PUT` - Store values
+/// - `DELETE` - Remove values
+/// - `SUBSCRIBE` - Register for notifications
+/// - `UNSUBSCRIBE` - Unregister from notifications
+///
+/// For detailed protocol information, see: `../docs/CLIENT_SERVER_PROTOCOL.md`
 pub struct NkvCore<P: StorageEngine> {
     notifiers: Trie<N>,
+    objects: Trie<String>,
     storage: P,
 }
 
 impl<P: StorageEngine> NkvCore<P> {
     pub fn new(storage: P) -> std::io::Result<Self> {
+        let mut objects = Trie::new();
+        for k in storage.keys() {
+            if let Some(e) = objects.insert(&k, k.clone()) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Trie insert {} failed: {}", k, e),
+                ));
+            }
+        }
         let res = Self {
             notifiers: Trie::new(),
+            objects,
             storage,
         };
-
         Ok(res)
     }
 
     pub async fn put(&mut self, key: &str, value: Box<[u8]>) -> Result<(), NotifyKeyValueError> {
+        if Trie::<()>::has_wildcard(key) {
+            return Err(NotifyKeyValueError::WrongKey(
+                "put does not support wildcards".to_string(),
+            ));
+        }
         let vector: Arc<Mutex<Vec<N>>> = Arc::new(Mutex::new(Vec::new()));
         let vc = Arc::clone(&vector);
 
         let capture_and_push: Option<
             Box<
-                dyn Fn(&mut TrieNode<N>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                dyn Fn(&TrieNode<N>) -> Pin<Box<dyn Future<Output = ()> + Send>>
                     + Send
                     + Sync
                     + 'static,
             >,
         > = Some({
             Box::new(
-                move |trie_ref: &mut TrieNode<N>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                move |trie_ref: &TrieNode<N>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
                     let notifier_arc = match trie_ref.value.as_ref() {
                         Some(value) => Arc::clone(&value),
                         None => return Box::pin(async {}),
@@ -156,21 +227,31 @@ impl<P: StorageEngine> NkvCore<P> {
             )
         });
 
+        self.objects.insert(key, key.into());
         self.storage.put(key, value.clone()).map_err(|err| {
             error!("failed to store value: {}", err);
             err
         })?;
 
-        if let Some(notifier) = self.notifiers.get_mut(key, capture_and_push).await {
-            match notifier
-                .lock()
-                .await
-                .send_update(key.to_string(), value.clone())
-            {
-                Err(err) => error!("failed to send update notification for {}: {}", key, err),
-                _ => {}
+        let notifiers = self.notifiers.get_mut(key, capture_and_push).await;
+
+        match notifiers.len() {
+            0 => {} // ignore
+            1 => {
+                match notifiers[0]
+                    .lock()
+                    .await
+                    .send_update(key.to_string(), value.clone())
+                {
+                    Err(err) => error!("failed to send update notification for {}: {}", key, err),
+                    _ => {}
+                }
             }
-        }
+            _ => {
+                // TODO: you can't put value with a wildcard,
+                // so it should not return more than one value
+            }
+        };
 
         let vector_lock = vector.lock().await;
         for notifier_arc in vector_lock.iter() {
@@ -185,7 +266,13 @@ impl<P: StorageEngine> NkvCore<P> {
     }
 
     pub fn get(&self, key: &str) -> HashMap<String, Arc<[u8]>> {
-        self.storage.get(key)
+        let map: HashMap<String, Arc<[u8]>> = self
+            .objects
+            .get(key)
+            .iter()
+            .map(|s| (s.to_string(), self.storage.get(s)))
+            .collect();
+        return map;
     }
 
     pub async fn delete(&mut self, key: &str) -> Result<(), NotifyKeyValueError> {
@@ -194,14 +281,14 @@ impl<P: StorageEngine> NkvCore<P> {
 
         let capture_and_push: Option<
             Box<
-                dyn Fn(&mut TrieNode<N>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                dyn Fn(&TrieNode<N>) -> Pin<Box<dyn Future<Output = ()> + Send>>
                     + Send
                     + Sync
                     + 'static,
             >,
         > = Some({
             Box::new(
-                move |trie_ref: &mut TrieNode<N>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                move |trie_ref: &TrieNode<N>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
                     let notifier_arc = match trie_ref.value.as_ref() {
                         Some(value) => Arc::clone(&value),
                         None => return Box::pin(async {}),
@@ -217,20 +304,34 @@ impl<P: StorageEngine> NkvCore<P> {
             )
         });
 
-        if let Some(val) = self.notifiers.get_mut(key, capture_and_push).await {
-            val.lock().await.unsubscribe_all(key)?;
+        // delete all
+        let notifiers = self.notifiers.get_mut(key, capture_and_push).await;
+
+        // if we have wildcard, we want to delete all children as well
+        for n in &notifiers {
+            n.lock().await.unsubscribe_all(key)?
         }
+
+        // notify all parents that element(s) is(are) being deleted
         {
             let vec_lock = vector.lock().await;
             for n_arc in vec_lock.iter() {
                 n_arc.lock().await.send_close(key.to_string())?;
             }
         }
-        self.storage.delete(key).map_err(|err| {
-            error!("failed to delete {} from storage: {}", key, err);
-            err
-        })?;
+
+        let objs = self.objects.get(key);
+
+        for obj in objs {
+            self.storage.delete(obj).map_err(|err| {
+                error!("failed to delete {} from storage: {}", key, err);
+                err
+            })?;
+        }
+
         self.notifiers.remove(key);
+        self.objects.remove(key);
+
         Ok(())
     }
 
@@ -239,17 +340,25 @@ impl<P: StorageEngine> NkvCore<P> {
         key: &str,
         uuid: String,
     ) -> Result<mpsc::UnboundedReceiver<Message>, NotifyKeyValueError> {
-        if let Some(val) = self.notifiers.get_mut(key, None).await {
-            return Ok(val.lock().await.subscribe(uuid)?);
-        } else {
-            // Client can subscribe to a non-existent value
-            let n = Arc::new(Mutex::new(Notification::new()));
-            let tx = n.lock().await.subscribe(uuid).map_err(|err| {
-                error!("failed to subscribe: {}", err); // TODO: add uuid here?
-                err
-            })?;
-            self.notifiers.insert(key, n);
-            return Ok(tx);
+        // XXX: should there be a wildcard restriction?
+        let notifiers = self.notifiers.get_mut(key, None).await;
+
+        match notifiers.len() {
+            0 => {
+                // Client can subscribe to a non-existent value
+                let n = Arc::new(Mutex::new(Notification::new()));
+                let tx = n.lock().await.subscribe(uuid).map_err(|err| {
+                    error!("failed to subscribe: {}", err); // TODO: add uuid here?
+                    err
+                })?;
+                self.notifiers.insert(key, n);
+                return Ok(tx);
+            }
+            1 => {
+                return Ok(notifiers[0].lock().await.subscribe(uuid)?);
+            }
+            // TODO: add new error
+            _ => return Err(NotifyKeyValueError::NotFound),
         }
     }
 
@@ -258,17 +367,24 @@ impl<P: StorageEngine> NkvCore<P> {
         key: &str,
         uuid: String,
     ) -> Result<(), NotifyKeyValueError> {
-        if let Some(val) = self.notifiers.get_mut(key, None).await {
-            val.lock()
-                .await
-                .unsubscribe(key.to_string(), &uuid)
-                .map_err(|err| {
-                    error!("failed to unsubscribe for key {}: {}", key, err);
-                    err
-                })?;
-            Ok(())
-        } else {
-            Err(NotifyKeyValueError::NotFound)
+        // XXX: should there be a wildcard restriction?
+        let notifiers = self.notifiers.get_mut(key, None).await;
+
+        match notifiers.len() {
+            1 => {
+                notifiers[0]
+                    .lock()
+                    .await
+                    .unsubscribe(key.to_string(), &uuid)
+                    .map_err(|err| {
+                        error!("failed to unsubscribe for key {}: {}", key, err);
+                        err
+                    })?;
+                Ok(())
+            }
+            // TODO: add new error when its more than 1, for 0 should
+            // return NotFound
+            _ => Err(NotifyKeyValueError::NotFound),
         }
     }
     pub async fn trace(&mut self, key: &str) -> Result<Vec<String>, NotifyKeyValueError> {
@@ -277,14 +393,14 @@ impl<P: StorageEngine> NkvCore<P> {
 
         let capture_and_push: Option<
             Box<
-                dyn Fn(&mut TrieNode<N>) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                dyn Fn(&TrieNode<N>) -> Pin<Box<dyn Future<Output = ()> + Send>>
                     + Send
                     + Sync
                     + 'static,
             >,
         > = Some({
             Box::new(
-                move |trie_ref: &mut TrieNode<N>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
+                move |trie_ref: &TrieNode<N>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
                     let notifier_arc = match trie_ref.value.as_ref() {
                         Some(value) => Arc::clone(&value),
                         None => return Box::pin(async {}),
@@ -303,8 +419,8 @@ impl<P: StorageEngine> NkvCore<P> {
         let mut cloned_vec: Vec<String> = Vec::new();
 
         // include
-        if let Some(data) = self.notifiers.get_mut(key, capture_and_push).await {
-            for key in data.lock().await.subscriptions.keys().cloned() {
+        for n in self.notifiers.get_mut(key, capture_and_push).await {
+            for key in n.lock().await.subscriptions.keys().cloned() {
                 cloned_vec.push(key);
             }
         }
