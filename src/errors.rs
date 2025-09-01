@@ -38,6 +38,7 @@ impl std::error::Error for NotifierError {
 pub enum NotifyKeyValueError {
     NoError,
     NotFound,
+    WrongKey(String),
     NotificationError(NotificationError),
     IoError(std::io::Error),
 }
@@ -67,6 +68,7 @@ impl fmt::Display for NotifyKeyValueError {
             NotifyKeyValueError::NoError => write!(f, "No Error"),
             NotifyKeyValueError::NotificationError(e) => write!(f, "Notification error {}", e),
             NotifyKeyValueError::IoError(e) => write!(f, "IO error {}", e),
+            NotifyKeyValueError::WrongKey(s) => write!(f, "Wrong key: {}", s),
         }
     }
 }
@@ -76,6 +78,7 @@ impl std::error::Error for NotifyKeyValueError {
         match self {
             NotifyKeyValueError::NoError => None,
             NotifyKeyValueError::NotFound => None,
+            NotifyKeyValueError::WrongKey(_) => None,
             NotifyKeyValueError::NotificationError(e) => Some(e),
             NotifyKeyValueError::IoError(e) => Some(e),
         }

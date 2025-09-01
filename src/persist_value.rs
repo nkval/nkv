@@ -56,7 +56,7 @@ impl FileStorage {
 
     fn iterate_folders(
         cur_path: PathBuf,
-        files: &mut Trie<PathBuf>,
+        result: &mut Vec<String>,
         root: &PathBuf,
     ) -> io::Result<()> {
         if cur_path.is_file() {
@@ -64,21 +64,21 @@ impl FileStorage {
                 Some(_) => {
                     let key = Self::path_to_key(&cur_path, root);
                     if key != "" {
-                        files.insert(&key, cur_path);
+                        result.push(key)
                     }
                 }
                 None => {} // i.e. / /foo.txt/..
             }
         } else if cur_path.is_dir() {
             for entry in cur_path.read_dir()? {
-                Self::iterate_folders(entry?.path(), files, root)?;
+                Self::iterate_folders(entry?.path(), result, root)?;
             }
         }
         Ok(())
     }
 
     pub fn new(path: PathBuf) -> io::Result<Self> {
-        let mut res = Self {
+        let res = Self {
             ingest: path.join("ingest/"),
             digest: path.join("digest/"),
             root: path,
@@ -99,30 +99,6 @@ impl FileStorage {
 
         if !res.digest.exists() {
             fs::create_dir_all(&res.digest)?;
-        }
-
-        for entry in fs::read_dir(&res.digest)? {
-            let entry = entry?;
-            let path = entry.path();
-
-            if path.is_file() {
-                match path.file_name() {
-                    Some(_) => {
-                        let key = Self::path_to_key(&path, &res.digest);
-                        if key != "" {
-                            res.files.insert(&key, path);
-                        }
-                    }
-                    None => {} // / or /foo.txt/..
-                }
-            } else if path.is_dir() {
-                match path.file_name() {
-                    Some(_) => {
-                        Self::iterate_folders(path, &mut res.files, &res.digest)?;
-                    }
-                    None => {} // / or /foo.txt/..
-                }
-            }
         }
 
         // create directory after reading state so that we don't have to explicitly ignore it
@@ -148,20 +124,24 @@ impl StorageEngine for FileStorage {
         fs::remove_file(&self.digest.join(Self::key_to_path(key)))
     }
 
-    fn get(&self, key: &str) -> HashMap<String, Arc<[u8]>> {
-        let mut res: HashMap<String, Arc<[u8]>> = HashMap::new();
-        for files in self.files.get(key) {
-            match fs::read(files) {
-                Ok(data) => {
-                    res.insert(
-                        Self::path_to_key(files, &self.root.join("digest")),
-                        Arc::clone(&data.into_boxed_slice().into()),
-                    );
-                }
-                Err(_) => error!("failed to read {:?}", files),
-            };
+    fn get(&self, key: &str) -> Arc<[u8]> {
+        let fp = self.digest.join(Self::key_to_path(key));
+        match fs::read(&fp) {
+            Ok(data) => {
+                return Arc::clone(&data.into_boxed_slice().into());
+            }
+            Err(_) => error!("failed to read {:?}", &fp),
         }
-        res
+        Arc::new([])
+    }
+
+    fn keys(&self) -> Vec<String> {
+        let mut result: Vec<String> = Vec::new();
+        match Self::iterate_folders(self.digest.clone(), &mut result, &self.digest) {
+            Ok(_) => {}
+            Err(e) => error!("failed to iterate folders {}", e),
+        };
+        return result;
     }
 }
 
@@ -209,9 +189,7 @@ mod tests {
         assert_eq!(data_from_file, original_data.as_ref());
 
         let got = fs.get(key);
-        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
-        expected.insert(key.to_string(), Arc::from(original_data));
-        assert_eq!(got, expected);
+        assert_eq!(got, Arc::from(original_data));
 
         let new_data: Box<[u8]> = Box::new([6, 7, 8, 9, 10]);
         fs.put(key, new_data.clone())
@@ -221,9 +199,7 @@ mod tests {
         assert_eq!(data_from_file, new_data.as_ref());
 
         let got = fs.get(key);
-        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
-        expected.insert(key.to_string(), Arc::from(new_data));
-        assert_eq!(got, expected);
+        assert_eq!(got, Arc::from(new_data));
 
         fs.delete(key).expect("Failed to delete value");
         assert!(!file_path.exists());
@@ -266,9 +242,7 @@ mod tests {
         assert_eq!(data_from_file, original_data.as_ref());
 
         let got = fs.get(key);
-        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
-        expected.insert(key.to_string(), Arc::from(original_data));
-        assert_eq!(got, expected);
+        assert_eq!(got, Arc::from(original_data));
 
         let new_data: Box<[u8]> = Box::new([6, 7, 8, 9, 10]);
         fs.put(key, new_data.clone())
@@ -278,9 +252,7 @@ mod tests {
         assert_eq!(data_from_file, new_data.as_ref());
 
         let got = fs.get(key);
-        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
-        expected.insert(key.to_string(), Arc::from(new_data));
-        assert_eq!(got, expected);
+        assert_eq!(got, Arc::from(new_data));
 
         fs.delete(key).expect("Failed to delete value");
         assert!(!file_path.exists());
@@ -352,28 +324,18 @@ mod tests {
         let fs = FileStorage::new(path.clone()).expect("Failed to create FileStorage");
 
         let got = fs.get("key1");
-        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
-        expected.insert("key1".to_string(), Arc::from(original_data.clone()));
-        assert_eq!(got, expected);
+        assert_eq!(got, Arc::from(original_data.clone()));
 
         let got = fs.get("key2");
-        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
-        expected.insert("key2".to_string(), Arc::from(original_data.clone()));
-        assert_eq!(got, expected);
+        assert_eq!(got, Arc::from(original_data.clone()));
 
         let got = fs.get("key3");
-        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
-        expected.insert("key3".to_string(), Arc::from(original_data.clone()));
-        assert_eq!(got, expected);
+        assert_eq!(got, Arc::from(original_data.clone()));
 
         let got = fs.get("ingest.key4");
-        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
-        expected.insert("ingest.key4".to_string(), Arc::from(original_data.clone()));
-        assert_eq!(got, expected);
+        assert_eq!(got, Arc::from(original_data.clone()));
 
         let got = fs.get("digest.key4");
-        let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
-        expected.insert("digest.key4".to_string(), Arc::from(original_data.clone()));
-        assert_eq!(got, expected);
+        assert_eq!(got, Arc::from(original_data.clone()));
     }
 }
