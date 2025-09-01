@@ -109,7 +109,7 @@ impl<T> Trie<T> {
         }
     }
 
-    fn has_wildcard(key: &str) -> bool {
+    pub fn has_wildcard(key: &str) -> bool {
         key.contains(Self::WILDCARD)
     }
 
