@@ -12,9 +12,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::errors::{NotifierError, NotifyKeyValueError};
+use crate::errors::NotifyKeyValueError;
 use crate::request_msg::Message;
-use crate::traits::StorageEngine;
+use crate::storage::traits::StorageEngine;
 use crate::trie::{Trie, TrieNode};
 use tokio::sync::{mpsc, Mutex};
 use tracing::error;
@@ -459,7 +459,7 @@ impl<P: StorageEngine> NkvCore<P> {
 
 #[cfg(test)]
 mod tests {
-    use crate::persist_value::FileStorage;
+    use crate::storage::file_storage::FileStorage;
 
     use super::*;
     use anyhow::Result;

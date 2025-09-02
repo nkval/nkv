@@ -4,9 +4,7 @@
 // on a file system. Writing to a disk is an
 // atomic operation
 
-use crate::traits::StorageEngine;
-use crate::trie::Trie;
-use std::collections::HashMap;
+use super::traits::StorageEngine;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -29,7 +27,6 @@ pub struct FileStorage {
     root: PathBuf,
     ingest: PathBuf,
     digest: PathBuf,
-    files: Trie<PathBuf>,
 }
 
 impl FileStorage {
@@ -82,7 +79,6 @@ impl FileStorage {
             ingest: path.join("ingest/"),
             digest: path.join("digest/"),
             root: path,
-            files: Trie::new(),
         };
 
         if !res.root.is_dir() {
@@ -116,11 +112,10 @@ impl StorageEngine for FileStorage {
             error!("atomic_write failed for {:?}: {}", &fp, err);
             err
         })?;
-        self.files.insert(key, fp);
         Ok(())
     }
 
-    fn delete(&self, key: &str) -> std::io::Result<()> {
+    fn delete(&mut self, key: &str) -> std::io::Result<()> {
         fs::remove_file(&self.digest.join(Self::key_to_path(key)))
     }
 

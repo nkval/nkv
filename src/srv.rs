@@ -18,8 +18,35 @@ use tracing::{debug, error, info, info_span, Instrument};
 use crate::errors::NotifyKeyValueError;
 use crate::nkv::NkvCore;
 use crate::notifier::{Notifier, TcpWriter};
-use crate::persist_value::FileStorage;
 use crate::request_msg::{self, BaseMessage, PutMessage, ServerRequest, ServerResponse};
+
+// Define type alias for the selected storage
+#[cfg(feature = "memory")]
+pub type Storage = crate::storage::memory_storage::MemoryStorage;
+
+#[cfg(feature = "file")]
+pub type Storage = crate::storage::file_storage::FileStorage;
+
+#[cfg(feature = "router")]
+pub type Storage = crate::storage::RouterStorage;
+
+// Fixed factory function that returns concrete type
+#[cfg(feature = "memory")]
+pub fn create_storage_engine(_path: std::path::PathBuf) -> std::io::Result<Storage> {
+    crate::storage::memory_storage::MemoryStorage::new()
+}
+
+#[cfg(feature = "file")]
+pub fn create_storage_engine(path: std::path::PathBuf) -> std::io::Result<Storage> {
+    crate::storage::file_storage::FileStorage::new(path)
+}
+
+#[cfg(feature = "router")]
+pub fn create_storage_engine(path: std::path::PathBuf) -> std::io::Result<Storage> {
+    let memory = crate::storage::memory_storage::MemoryStorage::new()?;
+    let file = crate::storage::file_storage::FileStorage::new(path)?;
+    crate::storage::RouterStorage::new(memory, file)
+}
 
 pub struct PutMsg {
     pub key: String,
@@ -86,7 +113,8 @@ impl Server {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         let (usr_cancel_tx, mut usr_cancel_rx) = oneshot::channel();
 
-        let storage = FileStorage::new(path)?;
+        // let storage = FileStorage::new(path)?;
+        let storage = create_storage_engine(path)?;
         let mut nkv = NkvCore::new(storage)?;
 
         let socket_path = Path::new(&addr);
