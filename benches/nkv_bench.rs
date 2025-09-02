@@ -2,8 +2,8 @@
 
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 use nkv::nkv::NkvCore;
-use nkv::persist_value::FileStorage;
 use nkv::srv::{BaseMsg, GetMsg, PutMsg, Server};
+use nkv::storage::file_storage::FileStorage;
 use nkv::trie::Trie;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
