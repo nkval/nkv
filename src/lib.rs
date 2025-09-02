@@ -5,13 +5,19 @@
 // and unsubscribe to a value
 
 pub mod errors;
+
+pub mod storage {
+    pub mod file_storage;
+    pub mod memory_storage;
+    pub mod router_storage;
+    pub mod traits;
+}
+
 pub mod flag_parser;
 pub mod nkv;
 pub mod notifier;
-pub mod persist_value;
 pub mod request_msg;
 pub mod srv;
-pub mod traits;
 pub mod trie;
 
 use crate::notifier::Subscriber;
