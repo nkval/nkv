@@ -23,10 +23,13 @@ use std::collections::HashMap;
 use std::str;
 use std::sync::Arc;
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use futures::{SinkExt, StreamExt};
+use tokio::io::BufWriter;
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::{sleep, Duration};
+use tokio_util::bytes::Bytes;
+use tokio_util::codec::{Framed, LengthDelimitedCodec};
 
 use tracing::error;
 
@@ -58,10 +61,14 @@ impl<T> StateBuf<T> {
 }
 
 pub type TcpWriter = BufWriter<tokio::io::WriteHalf<tokio::net::UnixStream>>;
+pub type SinkWriter = futures::stream::SplitSink<
+    Framed<tokio::net::UnixStream, LengthDelimitedCodec>,
+    tokio_util::bytes::Bytes,
+>;
 
 #[derive(Debug)]
 pub struct Notifier {
-    clients: Arc<Mutex<HashMap<String, TcpWriter>>>,
+    clients: Arc<Mutex<HashMap<String, SinkWriter>>>,
 }
 
 impl Notifier {
@@ -100,7 +107,7 @@ impl Notifier {
         res
     }
 
-    pub async fn subscribe(&self, uuid: String, stream: TcpWriter) {
+    pub async fn subscribe(&self, uuid: String, stream: SinkWriter) {
         let mut subscribers = self.clients.lock().await;
         subscribers.insert(uuid.clone(), stream);
     }
@@ -124,7 +131,7 @@ impl Notifier {
     }
 
     async fn send_notifications(
-        clients: Arc<Mutex<HashMap<String, TcpWriter>>>,
+        clients: Arc<Mutex<HashMap<String, SinkWriter>>>,
         msg_buf: Arc<Mutex<StateBuf<Message>>>,
     ) {
         let buf_val = {
@@ -140,7 +147,7 @@ impl Notifier {
     }
     async fn unsubscribe_impl(
         key: String,
-        clients: &mut HashMap<String, TcpWriter>,
+        clients: &mut HashMap<String, SinkWriter>,
         uuid: &str,
     ) -> Result<(), NotifierError> {
         match clients.get_mut(uuid) {
@@ -156,18 +163,19 @@ impl Notifier {
         Ok(())
     }
 
-    async fn send_bytes(msg: &Message, stream: &mut TcpWriter) -> Result<(), NotifierError> {
+    async fn send_bytes(msg: &Message, stream: &mut SinkWriter) -> Result<(), NotifierError> {
         // TODO: COPYING STUFF; NOT COOL
         stream
-            .write_all(&format!("{}\n", msg.to_string()).into_bytes())
+            .send(Bytes::from(format!("{}\n", msg.to_string())))
             .await?;
-
-        stream.flush().await?;
 
         Ok(())
     }
 
-    async fn broadcast_message(clients: Arc<Mutex<HashMap<String, TcpWriter>>>, message: &Message) {
+    async fn broadcast_message(
+        clients: Arc<Mutex<HashMap<String, SinkWriter>>>,
+        message: &Message,
+    ) {
         let keys: Vec<String> = {
             let client_guard = clients.lock().await;
             client_guard.keys().cloned().collect()
@@ -226,10 +234,14 @@ impl Subscriber {
     }
 
     async fn connect(&self) -> tokio::io::Result<()> {
-        let stream = UnixStream::connect(&self.addr).await?;
-        let (read_half, write_half) = stream.into_split();
-        let mut writer = BufWriter::new(write_half);
-        let mut reader = BufReader::new(read_half);
+        let unix_stream = UnixStream::connect(&self.addr).await?;
+        let framed_stream = LengthDelimitedCodec::builder()
+            .little_endian()
+            // go module github.com/getlantern/framed expects 4-byte in little-endian format as length field
+            .length_field_type::<u32>()
+            .new_framed(unix_stream);
+
+        let (mut sink, mut stream) = framed_stream.split();
 
         let req = ServerRequest::Subscribe(BaseMessage {
             id: self.uuid.clone(),
@@ -238,17 +250,19 @@ impl Subscriber {
         });
 
         let req = format!("{}\n", req.to_string());
-        writer.write_all(&req.into_bytes()).await?;
-        writer.flush().await?;
+        sink.send(Bytes::from(req)).await?;
 
-        let mut line = String::new();
-        while let Ok(n) = reader.read_line(&mut line).await {
-            if n == 0 {
-                // Connection closed
-                break;
+        while let Some(conn) = stream.next().await {
+            match conn {
+                Ok(bytes) => {
+                    let line = String::from_utf8(bytes.to_vec()).unwrap();
+                    self.parse_message(&line.trim_end());
+                }
+                Err(_) => {
+                    // Connection closed
+                    break;
+                }
             }
-            self.parse_message(&line.trim_end());
-            line.clear();
         }
 
         Err(tokio::io::Error::new(
@@ -275,7 +289,6 @@ mod tests {
     use super::*;
     use crate::nkv::Notification;
     use tempfile::tempdir;
-    use tokio::io::split;
     use tokio::net::UnixListener;
 
     #[tokio::test]
@@ -299,13 +312,15 @@ mod tests {
         });
 
         let _handle = tokio::spawn(async move {
-            let (stream, _addr) = listener.accept().await.unwrap();
-            let (read_half, write_half) = split(stream);
-            let mut reader = tokio::io::BufReader::new(read_half);
-            let writer = BufWriter::new(write_half);
+            let (unix_stream, _addr) = listener.accept().await.unwrap();
+            let framed_stream = LengthDelimitedCodec::builder()
+                .little_endian()
+                // go module github.com/getlantern/framed expects 4-byte in little-endian format as length field
+                .length_field_type::<u32>()
+                .new_framed(unix_stream);
 
-            let mut buffer = String::new();
-            let _ = reader.read_line(&mut buffer).await;
+            let (writer, mut stream) = framed_stream.split();
+            let _ = stream.next().await.unwrap().unwrap();
 
             let _ = notifier.subscribe(uuid, writer).await;
             tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;

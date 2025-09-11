@@ -24,12 +24,13 @@ use crate::notifier::Subscriber;
 use crate::request_msg::Message;
 use crate::request_msg::*;
 
+use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::fmt;
 use std::str;
 use tokio::net::UnixStream;
-// use tokio_util::codec::{Framed, LengthDelimitedCodec};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio_util::bytes::Bytes;
+use tokio_util::codec::LengthDelimitedCodec;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -194,20 +195,20 @@ impl NkvClient {
     }
 
     async fn send_request(&mut self, request: &ServerRequest) -> tokio::io::Result<ServerResponse> {
-        let stream = UnixStream::connect(&self.addr).await?;
-        let (reader, mut writer) = stream.into_split();
+        let unix_stream = UnixStream::connect(&self.addr).await?;
+        let framed_stream = LengthDelimitedCodec::builder()
+            .little_endian()
+            // go module github.com/getlantern/framed expects 4-byte in little-endian format as length field
+            .length_field_type::<u32>()
+            .new_framed(unix_stream);
 
-        let mut buf_reader = BufReader::new(reader);
+        let (mut sink, mut stream) = framed_stream.split();
 
         let msg = format!("{}\n", request.to_string());
-        writer.write_all(msg.as_bytes()).await?;
-        writer.flush().await?;
+        sink.send(Bytes::from(msg)).await?;
 
-        let mut line = String::new();
-        buf_reader
-            .read_line(&mut line)
-            .await
-            .map_err(|_| tokio::io::Error::new(tokio::io::ErrorKind::Other, "read error"))?;
+        let bytes = stream.next().await.unwrap();
+        let line = String::from_utf8(bytes?.to_vec()).unwrap();
 
         let response: ServerResponse = line.trim_end().parse().map_err(|e| {
             tokio::io::Error::new(

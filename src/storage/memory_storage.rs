@@ -57,19 +57,6 @@ impl StorageEngine for MemoryStorage {
     }
 }
 
-// Assuming this is what your StorageEngine trait looks like
-#[cfg(test)]
-mod traits {
-    use std::sync::Arc;
-
-    pub trait StorageEngine {
-        fn put(&mut self, key: &str, data: Box<[u8]>) -> std::io::Result<()>;
-        fn delete(&mut self, key: &str) -> std::io::Result<()>;
-        fn get(&self, key: &str) -> std::io::Result<Arc<[u8]>>;
-        fn keys(&self) -> Vec<String>;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
