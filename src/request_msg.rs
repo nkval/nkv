@@ -25,10 +25,19 @@ pub struct BaseMessage {
     pub client_uuid: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct PutMessage {
     pub base: BaseMessage,
     pub value: Box<[u8]>,
+}
+
+impl fmt::Debug for PutMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match std::str::from_utf8(&self.value) {
+            Ok(val) => write!(f, "{:?} {}", self.base, val),
+            Err(_) => write!(f, "{:?} {:?}", self.base, self.value),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
