@@ -5,19 +5,21 @@
 // using channels or from another program using tcp socket, for message
 // format you can check request_msg.rs
 
+use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::fs;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::net::UnixListener;
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::bytes::Bytes;
+use tokio_util::codec::{Framed, LengthDelimitedCodec};
 use tracing::{debug, error, info, info_span, Instrument};
 
 use crate::errors::NotifyKeyValueError;
 use crate::nkv::NkvCore;
-use crate::notifier::{Notifier, TcpWriter};
+use crate::notifier::{Notifier, SinkWriter};
 use crate::request_msg::{self, BaseMessage, PutMessage, ServerRequest, ServerResponse};
 
 pub struct PutMsg {
@@ -55,7 +57,7 @@ pub struct BaseMsg {
 pub struct SubMsg {
     key: String,
     pub uuid: String,
-    writer: TcpWriter,
+    writer: SinkWriter,
     resp_tx: mpsc::Sender<NotifyKeyValueError>,
 }
 
@@ -227,7 +229,12 @@ impl Server {
             let trace_tx = self.trace_tx();
 
             tokio::select! {
-                Ok((stream, _)) = listener.accept() => {
+                Ok((unix_stream, _)) = listener.accept() => {
+                    let stream = LengthDelimitedCodec::builder()
+                        .little_endian()
+                        // go module github.com/getlantern/framed expects 4-byte in little-endian format as length field
+                        .length_field_type::<u32>()
+                        .new_framed(unix_stream);
                     tokio::spawn({
                         Self::handle_request(stream,
                         put_tx.clone(),
@@ -246,7 +253,7 @@ impl Server {
     }
 
     async fn handle_request(
-        stream: tokio::net::UnixStream,
+        framed_stream: Framed<tokio::net::UnixStream, LengthDelimitedCodec>,
         put_tx: mpsc::UnboundedSender<PutMsg>,
         get_tx: mpsc::UnboundedSender<GetMsg>,
         del_tx: mpsc::UnboundedSender<BaseMsg>,
@@ -254,15 +261,10 @@ impl Server {
         unsub_tx: mpsc::UnboundedSender<BaseMsg>,
         trace_tx: mpsc::UnboundedSender<TraceMsg>,
     ) {
-        let (read_half, write_half) = tokio::io::split(stream);
-        let mut reader = BufReader::new(read_half);
-        let writer = BufWriter::new(write_half);
+        let (writer, mut stream) = framed_stream.split();
 
-        let mut line = String::new();
-        if reader.read_line(&mut line).await.is_err() {
-            error!("failed to read request");
-            return;
-        }
+        let bytes = stream.next().await.unwrap().unwrap();
+        let line = String::from_utf8(bytes.to_vec()).unwrap();
 
         let req: ServerRequest = match line.trim_end().parse() {
             Ok(r) => r,
@@ -330,7 +332,11 @@ impl Server {
         }
     }
 
-    async fn handle_put(writer: TcpWriter, nkv_tx: mpsc::UnboundedSender<PutMsg>, msg: PutMessage) {
+    async fn handle_put(
+        writer: SinkWriter,
+        nkv_tx: mpsc::UnboundedSender<PutMsg>,
+        msg: PutMessage,
+    ) {
         let (resp_tx, mut resp_rx) = mpsc::channel(1);
         let res = nkv_tx.send(PutMsg {
             key: msg.base.key,
@@ -359,7 +365,7 @@ impl Server {
     }
 
     async fn handle_get(
-        writer: TcpWriter,
+        writer: SinkWriter,
         nkv_tx: mpsc::UnboundedSender<GetMsg>,
         msg: BaseMessage,
     ) {
@@ -395,7 +401,7 @@ impl Server {
     }
 
     async fn handle_delete(
-        writer: TcpWriter,
+        writer: SinkWriter,
         nkv_tx: mpsc::UnboundedSender<BaseMsg>,
         msg: BaseMessage,
     ) {
@@ -424,7 +430,7 @@ impl Server {
     }
 
     async fn handle_sub(
-        writer: TcpWriter,
+        writer: SinkWriter,
         nkv_tx: mpsc::UnboundedSender<SubMsg>,
         msg: BaseMessage,
     ) {
@@ -441,7 +447,7 @@ impl Server {
     }
 
     async fn handle_unsub(
-        writer: TcpWriter,
+        writer: SinkWriter,
         nkv_tx: mpsc::UnboundedSender<BaseMsg>,
         msg: BaseMessage,
     ) {
@@ -470,7 +476,7 @@ impl Server {
     }
 
     async fn handle_trace(
-        writer: TcpWriter,
+        writer: SinkWriter,
         nkv_tx: mpsc::UnboundedSender<TraceMsg>,
         msg: BaseMessage,
     ) {
@@ -500,7 +506,7 @@ impl Server {
         };
         Self::write_response(ServerResponse::Trace(resp), writer).await;
     }
-    async fn handle_health(writer: TcpWriter, msg: BaseMessage) {
+    async fn handle_health(writer: SinkWriter, msg: BaseMessage) {
         Self::write_response(
             ServerResponse::Base(request_msg::BaseResp {
                 id: msg.id,
@@ -511,7 +517,7 @@ impl Server {
         .await;
     }
 
-    async fn handle_version(writer: TcpWriter, msg: BaseMessage) {
+    async fn handle_version(writer: SinkWriter, msg: BaseMessage) {
         let resp = ServerResponse::Version(request_msg::DataResp::<String> {
             base: request_msg::BaseResp {
                 id: msg.id,
@@ -522,14 +528,10 @@ impl Server {
         Self::write_response(resp, writer).await;
     }
 
-    async fn write_response(reply: ServerResponse, mut writer: TcpWriter) {
+    async fn write_response(reply: ServerResponse, mut writer: SinkWriter) {
         let msg = format!("{}\n", reply.to_string());
-        if let Err(e) = writer.write_all(&msg.into_bytes()).await {
+        if let Err(e) = writer.send(Bytes::from(msg)).await {
             error!("failed to write to socket; err = {:?}", e);
-            return;
-        }
-        if let Err(e) = writer.flush().await {
-            error!("failed to flush socket; err = {:?}", e);
             return;
         }
     }
@@ -613,9 +615,13 @@ mod tests {
         assert_eq!(got.value, expected);
 
         // create sub
-        let stream = UnixStream::connect(&url).await.unwrap();
-        let (_, write) = tokio::io::split(stream);
-        let writer = BufWriter::new(write);
+        let unix_stream = UnixStream::connect(&url).await.unwrap();
+        let framed_stream = LengthDelimitedCodec::builder()
+            .little_endian()
+            // go module github.com/getlantern/framed expects 4-byte in little-endian format as length field
+            .length_field_type::<u32>()
+            .new_framed(unix_stream);
+        let (writer, _) = framed_stream.split();
         let uuid = "MY_AWESOME_UUID".to_string();
 
         let _ = sub_tx.send(SubMsg {
