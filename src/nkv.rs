@@ -17,7 +17,7 @@ use crate::request_msg::Message;
 use crate::storage::traits::StorageEngine;
 use crate::trie::{Trie, TrieNode};
 use tokio::sync::{mpsc, Mutex};
-use tracing::error;
+use tracing::{debug, error};
 
 #[derive(Debug)]
 pub enum NotificationError {
@@ -238,6 +238,7 @@ impl<P: StorageEngine> NkvCore<P> {
             error!("failed to store value: {}", err);
             err
         })?;
+        debug!("we put value for {}", key);
 
         let notifiers = self.notifiers.get_mut(key, capture_and_push).await;
 
