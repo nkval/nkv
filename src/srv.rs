@@ -530,6 +530,7 @@ impl Server {
 
     async fn write_response(reply: ServerResponse, mut writer: SinkWriter) {
         let msg = format!("{}\n", reply.to_string());
+        debug!("sending response {:?}", reply);
         if let Err(e) = writer.send(Bytes::from(msg)).await {
             error!("failed to write to socket; err = {:?}", e);
             return;
