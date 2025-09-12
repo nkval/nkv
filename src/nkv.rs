@@ -447,13 +447,13 @@ impl<P: StorageEngine> NkvCore<P> {
         use regex::Regex;
 
         // ^(
-        //   \*                        --> wildcard alone
-        //   |                         --> OR
-        //   [A-Za-z0-9_]+             --> first key
-        //   (\.[A-Za-z0-9_]+)*        --> optional .key segments
-        //   (\.\*)?                   --> optional .*
+        //    \* --> wildcard alone
+        //    |                  --> OR
+        //    .+                 --> any character (except newline)
+        //    (\..+)* --> optional .key segments with any characters
+        //    (\.\*)?            --> optional .*
         // )$
-        let re = Regex::new(r"^(\*|[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*(\.\*)?)$").unwrap();
+        let re = Regex::new(r"^(\*|.+(\..+)*(\.\*)?)$").unwrap();
         re.is_match(key)
     }
 }
