@@ -353,6 +353,7 @@ impl Server {
         }
 
         let nkv_resp = resp_rx.recv().await.unwrap();
+        debug!("recieved status {}", nkv_resp);
         let status = match nkv_resp {
             NotifyKeyValueError::NoError => true,
             _ => false,
