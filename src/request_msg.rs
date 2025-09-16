@@ -31,12 +31,12 @@ pub struct PutMessage {
     pub value: Box<[u8]>,
 }
 
+// We are using this in debug logging,
+// since data might be sensitive, we are
+// not logging exact values, rather the length of data
 impl fmt::Debug for PutMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match std::str::from_utf8(&self.value) {
-            Ok(val) => write!(f, "{:?} {}", self.base, val),
-            Err(_) => write!(f, "{:?} {:?}", self.base, self.value),
-        }
+        write!(f, "{:?} length:{}", self.base, self.value.len())
     }
 }
 
