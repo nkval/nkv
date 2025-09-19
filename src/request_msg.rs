@@ -491,10 +491,9 @@ impl fmt::Debug for Message {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::Hello => write!(f, "HELLO"),
-            Self::Update { key, value } => match std::str::from_utf8(value) {
-                Ok(val) => write!(f, "UPDATE {} {}", key, val),
-                Err(_) => write!(f, "UPDATE {} {:?}", key, value),
-            },
+            Self::Update { key, value } => {
+                write!(f, "UPDATE {} {}", key, value.len())
+            }
             Self::Close { key } => write!(f, "CLOSE {}", key),
             Self::NotFound => write!(f, "NOTFOUND"),
         }
