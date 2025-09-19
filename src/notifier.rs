@@ -185,7 +185,10 @@ impl Notifier {
         for uuid in keys.iter() {
             if let Some(stream) = clients.lock().await.get_mut(uuid) {
                 if let Err(e) = Self::send_bytes(&message, stream).await {
-                    error!("failed to broadcast message {:?}: {}", message, e);
+                    error!(
+                        "failed to broadcast message {:?} to {}: {}",
+                        message, uuid, e
+                    );
                     failed_addrs.push(uuid.clone());
                     continue;
                 }
