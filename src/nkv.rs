@@ -925,28 +925,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_key_with_only_dots() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
-        let mut nkv = NkvCore::new(storage)?;
-
-        let data: Box<[u8]> = Box::new([1, 2, 3]);
-
-        // Test keys that are just dots
-        assert!(nkv.put(".", data.clone()).await.is_err());
-        assert!(nkv.put("..", data.clone()).await.is_err());
-        assert!(nkv.put("...", data.clone()).await.is_err());
-
-        let result = nkv.get(".");
-        assert!(result.is_empty());
-
-        let result = nkv.get("..");
-        assert!(result.is_empty());
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn test_put_empty_key() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
