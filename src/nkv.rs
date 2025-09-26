@@ -23,6 +23,7 @@ use tracing::{debug, error};
 pub enum NotificationError {
     AlreadySubscribed(String),
     SendError(String),
+    NotFound(String),
 }
 
 impl fmt::Display for NotificationError {
@@ -30,6 +31,7 @@ impl fmt::Display for NotificationError {
         match self {
             NotificationError::AlreadySubscribed(s) => write!(f, "Already subscribed {}", s),
             NotificationError::SendError(s) => write!(f, "Failed to send {}", s),
+            NotificationError::NotFound(s) => write!(f, "Notification with UUID {} not found", s),
         }
     }
 }
@@ -92,6 +94,7 @@ impl Notification {
         Ok(())
     }
 
+    // send update to all subscriptions
     pub fn send_update(&self, key: String, value: Box<[u8]>) -> Result<(), NotificationError> {
         for (_, tx) in &self.subscriptions {
             tx.send(Message::Update {
@@ -99,6 +102,23 @@ impl Notification {
                 value: value.clone(),
             })?;
         }
+        Ok(())
+    }
+
+    // update particular subscription
+    pub fn send_update_to_subscription(
+        &self,
+        uuid: String,
+        key: String,
+        value: Box<[u8]>,
+    ) -> Result<(), NotificationError> {
+        let tx = self
+            .subscriptions
+            .get(&uuid)
+            .ok_or(NotificationError::NotFound(uuid))?;
+
+        tx.send(Message::Update { key, value })?;
+
         Ok(())
     }
 
@@ -255,8 +275,7 @@ impl<P: StorageEngine> NkvCore<P> {
                 }
             }
             _ => {
-                // TODO: you can't put value with a wildcard,
-                // so it should not return more than one value
+                error!("more than one value returned for {}", key);
             }
         };
 
@@ -347,26 +366,43 @@ impl<P: StorageEngine> NkvCore<P> {
         key: &str,
         uuid: String,
     ) -> Result<mpsc::UnboundedReceiver<Message>, NotifyKeyValueError> {
-        // XXX: should there be a wildcard restriction?
         let notifiers = self.notifiers.get_mut(key, None).await;
 
-        match notifiers.len() {
+        let (tx, n) = match notifiers.len() {
             0 => {
-                // Client can subscribe to a non-existent value
                 let n = Arc::new(Mutex::new(Notification::new()));
-                let tx = n.lock().await.subscribe(uuid).map_err(|err| {
-                    error!("failed to subscribe: {}", err); // TODO: add uuid here?
+                let tx = n.lock().await.subscribe(uuid.clone()).map_err(|err| {
+                    error!("failed to subscribe: {}", err);
                     err
                 })?;
-                self.notifiers.insert(key, n);
-                return Ok(tx);
+                self.notifiers.insert(key, Arc::clone(&n));
+                Ok((tx, n))
             }
             1 => {
-                return Ok(notifiers[0].lock().await.subscribe(uuid)?);
+                // do Arc::clone since self.get is immutable
+                // and notifiers are mutable from self.notifiers.get_mut
+                let notification_arc = Arc::clone(&notifiers[0]);
+                let tx = notification_arc.lock().await.subscribe(uuid.clone())?;
+
+                Ok((tx, notification_arc))
             }
             // TODO: add new error
-            _ => return Err(NotifyKeyValueError::NotFound),
+            _ => Err(NotifyKeyValueError::NotFound),
+        }?;
+
+        // We want subscriber to recieve value if it was there
+        // before
+        let map = self.get(key);
+        for (key, value) in map {
+            // WARN: copies data, swtich to Vec<u8>?
+            n.lock().await.send_update_to_subscription(
+                uuid.clone(),
+                key,
+                value.to_vec().into_boxed_slice(),
+            )?;
         }
+
+        Ok(tx)
     }
 
     pub async fn unsubscribe(
@@ -460,7 +496,7 @@ impl<P: StorageEngine> NkvCore<P> {
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::file_storage::FileStorage;
+    use crate::storage::{file_storage::FileStorage, memory_storage::MemoryStorage};
 
     use super::*;
     use anyhow::Result;
@@ -575,6 +611,10 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
+        let expected_initial_update_msg = Message::Update {
+            key: "key1".to_string(),
+            value: data.clone(),
+        };
         nkv.put("key1", data).await?;
 
         let mut rx = nkv.subscribe("key1", "uuid1".to_string()).await?;
@@ -582,6 +622,14 @@ mod tests {
             assert_eq!(msg, Message::Hello)
         } else {
             panic!("Should recieve msg");
+        }
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg, expected_initial_update_msg,
+                "Expected initial UPDATE message"
+            );
+        } else {
+            panic!("Should receive initial UPDATE msg");
         }
 
         let new_data: Box<[u8]> = Box::new([5, 6, 7, 8, 9]);
@@ -666,6 +714,10 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
+        let expected_initial_update_msg = Message::Update {
+            key: "key1".to_string(),
+            value: data.clone(),
+        };
         nkv.put("key1", data).await?;
 
         let mut rx = nkv.subscribe("key1", "uuid1".to_string()).await?;
@@ -673,6 +725,14 @@ mod tests {
             assert_eq!(msg, Message::Hello)
         } else {
             panic!("Should recieve msg");
+        }
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg, expected_initial_update_msg,
+                "Expected initial UPDATE message"
+            );
+        } else {
+            panic!("Should receive initial UPDATE msg");
         }
         nkv.unsubscribe("key1", "uuid1".to_string()).await?;
 
@@ -786,7 +846,7 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
-        nkv.put("ks1.ks2.ks3.k", data).await?;
+        nkv.put("ks1.ks2.ks3.k", data.clone()).await?;
 
         let result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
         assert_eq!(result.len(), 0);
@@ -833,11 +893,23 @@ mod tests {
             .sort()
         );
 
+        let expected_initial_update_msg = Message::Update {
+            key: "ks1.ks2.ks3.k".to_string(),
+            value: data.clone(),
+        };
         let mut rx = nkv.subscribe("ks1.ks2.ks3.k", "uuid4".to_string()).await?;
         if let Some(msg) = rx.recv().await {
             assert_eq!(msg, Message::Hello)
         } else {
             panic!("Should recieve msg");
+        }
+        if let Some(msg) = rx.recv().await {
+            assert_eq!(
+                msg, expected_initial_update_msg,
+                "Expected initial UPDATE message"
+            );
+        } else {
+            panic!("Should receive initial UPDATE msg");
         }
         let mut result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
         assert_eq!(
@@ -977,39 +1049,59 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_subscribers_same_key() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let storage = MemoryStorage::new()?;
         let mut nkv = NkvCore::new(storage)?;
 
-        let data: Box<[u8]> = Box::new([1, 2, 3]);
-        nkv.put("shared.key", data.clone()).await?;
+        let initial_data: Box<[u8]> = Box::new([1, 2, 3]);
+        nkv.put("shared.key", initial_data.clone()).await?;
 
         // Multiple subscribers to same key
         let mut rx1 = nkv.subscribe("shared.key", "uuid1".to_string()).await?;
         let mut rx2 = nkv.subscribe("shared.key", "uuid2".to_string()).await?;
         let mut rx3 = nkv.subscribe("shared.key", "uuid3".to_string()).await?;
 
-        // Consume hello messages
-        rx1.recv().await;
-        rx2.recv().await;
-        rx3.recv().await;
+        // Expected initial update message (Old data update)
+        let expected_initial_update_msg = Message::Update {
+            key: "shared.key".to_string(),
+            value: initial_data.clone(),
+        };
+
+        // Consume messages: First HELLO, then Old Data Update
+        for rx in [&mut rx1, &mut rx2, &mut rx3] {
+            if let Some(msg) = rx.recv().await {
+                assert_eq!(msg, Message::Hello, "Expected Message::Hello");
+            } else {
+                panic!("Should receive HELLO msg");
+            }
+        }
+
+        for rx in [&mut rx1, &mut rx2, &mut rx3] {
+            if let Some(msg) = rx.recv().await {
+                assert_eq!(
+                    msg, expected_initial_update_msg,
+                    "Expected initial UPDATE message"
+                );
+            } else {
+                panic!("Should receive initial UPDATE msg");
+            }
+        }
 
         // Update the key
         let new_data: Box<[u8]> = Box::new([4, 5, 6]);
         nkv.put("shared.key", new_data.clone()).await?;
 
-        // All should receive update
+        // Expected new update message
+        let expected_new_update_msg = Message::Update {
+            key: "shared.key".to_string(),
+            value: new_data.clone(),
+        };
+
+        // All should receive the new update (New Data Update)
         for rx in [&mut rx1, &mut rx2, &mut rx3] {
             if let Some(msg) = rx.recv().await {
-                assert_eq!(
-                    msg,
-                    Message::Update {
-                        key: "shared.key".to_string(),
-                        value: new_data.clone()
-                    }
-                )
+                assert_eq!(msg, expected_new_update_msg, "Expected new UPDATE message");
             } else {
-                panic!("Should receive update msg");
+                panic!("Should receive new UPDATE msg");
             }
         }
 
@@ -1018,8 +1110,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe_unsubscribe_same_uuid_different_keys() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let storage = MemoryStorage::new()?;
         let mut nkv = NkvCore::new(storage)?;
 
         let data1: Box<[u8]> = Box::new([1, 2, 3]);
@@ -1032,6 +1123,10 @@ mod tests {
         let mut rx2 = nkv.subscribe("key2", "same_uuid".to_string()).await?;
 
         // Consume hello messages
+        rx1.recv().await;
+        rx2.recv().await;
+
+        // Consume initial update messages
         rx1.recv().await;
         rx2.recv().await;
 
@@ -1070,8 +1165,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_delete_notifies_subscribers() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let storage = MemoryStorage::new()?;
         let mut nkv = NkvCore::new(storage)?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3]);
@@ -1100,8 +1194,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_wildcard_delete_notifies_subscribers() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let storage = MemoryStorage::new()?;
         let mut nkv = NkvCore::new(storage)?;
 
         let data1: Box<[u8]> = Box::new([1, 2, 3]);
@@ -1126,8 +1219,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_1mb_data() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let storage = MemoryStorage::new()?;
         let mut nkv = NkvCore::new(storage)?;
 
         // Test with large data (1MB)
@@ -1159,8 +1251,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_unsubscribe_nonexistent() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let storage = FileStorage::new(temp_dir.path().to_path_buf())?;
+        let storage = MemoryStorage::new()?;
         let mut nkv = NkvCore::new(storage)?;
 
         assert!(nkv
