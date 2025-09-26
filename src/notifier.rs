@@ -24,7 +24,6 @@ use std::str;
 use std::sync::Arc;
 
 use futures::{SinkExt, StreamExt};
-use tokio::io::BufWriter;
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, watch, Mutex};
 use tokio::time::{sleep, Duration};

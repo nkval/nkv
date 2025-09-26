@@ -795,11 +795,11 @@ mod tests {
             .subscribe(key.clone(), send_to_channel.clone())
             .await
             .unwrap();
-        if let Some(val) = rx.recv().await {
-            assert_eq!(val, Message::Hello);
-        } else {
-            panic!("Expected value");
-        }
+        // Since we are using StateBuf to guarantee what we get
+        // latest message HELLO message might be omitted
+        // Note that it could be a race condition that would
+        // make us have 3 messages and then test would fail
+        let _ = rx.recv().await;
 
         let new_value: Box<[u8]> = Box::new([42, 0, 1, 0, 1]);
         let resp = client.put(key.clone(), new_value.clone()).await.unwrap();
