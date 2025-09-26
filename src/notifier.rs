@@ -60,7 +60,6 @@ impl<T> StateBuf<T> {
     }
 }
 
-pub type TcpWriter = BufWriter<tokio::io::WriteHalf<tokio::net::UnixStream>>;
 pub type SinkWriter = futures::stream::SplitSink<
     Framed<tokio::net::UnixStream, LengthDelimitedCodec>,
     tokio_util::bytes::Bytes,
