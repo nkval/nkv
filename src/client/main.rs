@@ -8,11 +8,39 @@ use std::time::Instant;
 use nkv::request_msg::ServerResponse;
 use nkv::trie::Trie;
 
-use rustyline_async::SharedWriter;
 use rustyline_async::{Readline, ReadlineEvent};
-use std::io::Write;
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
+
+use tokio::signal;
 
 use serde_json as json;
+
+// --- Helper structure to use a thread-safe Stdout ---
+// This is the type that will satisfy your generic constraints (W).
+pub struct ThreadSafeStdout {
+    // Arc<Mutex<T>> makes T: Send/Sync and Cloneable
+    inner: Arc<Mutex<io::Stdout>>,
+}
+
+// Implement Write for the wrapper. All writes must acquire the lock.
+impl Write for ThreadSafeStdout {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.lock().unwrap().write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.lock().unwrap().flush()
+    }
+}
+
+// The inner Arc<Mutex<Stdout>> already ensures Clone, Send, and Sync are derived.
+impl Clone for ThreadSafeStdout {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
 
 const DEFAULT_URL: &str = "/tmp/nkv/nkv.sock";
 const HELP_MESSAGE: &str = "nkv-client [OPTIONS]
@@ -33,8 +61,8 @@ OPTIONS:
 async fn main() -> tokio::io::Result<()> {
     let allowed_flags = vec!["help".to_string(), "addr".to_string()];
     let args: Vec<String> = env::args().collect();
-    let flags = match FlagParser::new(args, Some(allowed_flags)) {
-        Ok(res) => res,
+    let (flags, positional_args) = match FlagParser::new(args, Some(allowed_flags)) {
+        Ok((f, pa)) => (f, pa),
         Err(err) => {
             println!("error: {}", err);
             println!("nkv-client, version: {}", env!("CARGO_PKG_VERSION"));
@@ -76,8 +104,34 @@ async fn main() -> tokio::io::Result<()> {
         }
     }
 
-    let (mut rl, mut stdout) = Readline::new("\x1b[1;31m>>> \x1b[0m".into()).unwrap();
+    // running single command
+    if positional_args.len() > 0 {
+        let mut stdout = ThreadSafeStdout {
+            inner: Arc::new(Mutex::new(io::stdout())),
+        };
+        let mut keep_running = false;
+        match positional_args[0].to_lowercase().as_str() {
+            "unsubscribe" => {
+                println!("unsupported");
+                return Ok(());
+            }
+            "subscribe" => keep_running = true,
+            _ => {}
+        };
+        let borrowed_slices: Vec<&str> = positional_args.iter().map(|s| s.as_str()).collect();
+        handle_command(borrowed_slices, &mut client, &mut stdout).await;
+        if keep_running {
+            tokio::select! {
+                _ = signal::ctrl_c() => {
+                    println!("\nCtrl+C received! Shutting down gracefully...");
+                }
+            }
+        }
+        return Ok(());
+    }
 
+    // repl mode
+    let (mut rl, mut stdout) = Readline::new("\x1b[1;31m>>> \x1b[0m".into()).unwrap();
     rl.should_print_line_on(false, false);
 
     loop {
@@ -109,10 +163,10 @@ async fn main() -> tokio::io::Result<()> {
     Ok(())
 }
 
-async fn handle_command(
+async fn handle_command<W: Write + Clone + Send + Sync + 'static>(
     parts: Vec<&str>,
     client: &mut NkvClient,
-    stdout: &mut SharedWriter,
+    stdout: &mut W,
 ) -> bool {
     let sw = stdout.clone();
     let print_update = Box::new(move |value: Message| {
@@ -242,7 +296,7 @@ async fn handle_command(
     return false;
 }
 
-fn pretty_print_server_response(d: ServerResponse, stdout: &mut SharedWriter) {
+fn pretty_print_server_response<W: Write>(d: ServerResponse, stdout: &mut W) {
     // use stdout do directly send string, without keeping them in memory
     match d {
         ServerResponse::Base(_) | ServerResponse::Trace(_) | ServerResponse::Version(_) => {
