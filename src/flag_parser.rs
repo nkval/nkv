@@ -34,9 +34,13 @@ impl FlagParser {
     pub fn new(
         args: Vec<String>,
         allowed_flags: Option<Vec<String>>,
-    ) -> Result<Self, FlagParserError> {
+    ) -> Result<(Self, Vec<String>), FlagParserError> {
         let mut flags: HashMap<String, Option<String>> = HashMap::new();
-        let mut iter = args.iter().peekable();
+        let mut positional_args: Vec<String> = Vec::new();
+
+        // Skip the program name
+        let mut iter = args.into_iter().skip(1).peekable();
+
         while let Some(arg) = iter.next() {
             if let Some(flag) = arg.strip_prefix("--") {
                 if flags.contains_key(flag) {
@@ -53,6 +57,9 @@ impl FlagParser {
                 } else {
                     flags.insert(flag.to_string(), None);
                 }
+            } else {
+                // if it doesn't start with --, it's a positional argument
+                positional_args.push(arg);
             }
         }
 
@@ -63,7 +70,7 @@ impl FlagParser {
             }
         }
 
-        Ok(Self { flags })
+        Ok((Self { flags }, positional_args))
     }
 
     // Key is not present -> None
@@ -80,14 +87,14 @@ mod tests {
 
     #[test]
     fn test_help_flag() {
-        let parser =
+        let (parser, _) =
             FlagParser::new(vec!["my_program".to_string(), "--help".to_string()], None).unwrap();
         assert!(parser.flags.contains_key("help"))
     }
 
     #[test]
     fn test_config_flag() {
-        let parser = FlagParser::new(
+        let (parser, _) = FlagParser::new(
             vec![
                 "my_progam".to_string(),
                 "--config".to_string(),
@@ -102,7 +109,7 @@ mod tests {
 
     #[test]
     fn test_multiple_flags() {
-        let parser = FlagParser::new(
+        let (parser, _) = FlagParser::new(
             vec![
                 "my_progam".to_string(),
                 "--config".to_string(),
@@ -144,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_allowed_flags() {
-        let parser = FlagParser::new(
+        let (parser, _) = FlagParser::new(
             vec![
                 "my_progam".to_string(),
                 "--config".to_string(),
