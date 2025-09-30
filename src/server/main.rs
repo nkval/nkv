@@ -51,8 +51,8 @@ async fn main() {
         "level".to_string(),
     ];
     let args: Vec<String> = env::args().collect();
-    let flags = match FlagParser::new(args, Some(allowed_flags)) {
-        Ok(res) => res,
+    let (flags, _) = match FlagParser::new(args, Some(allowed_flags)) {
+        Ok((res, pa)) => (res, pa),
         Err(err) => {
             println!("error: {}", err);
             println!("nkv-server, version: {}", env!("CARGO_PKG_VERSION"));
