@@ -39,7 +39,7 @@ fn bench_nkv(c: &mut Criterion) {
                     let temp_dir = TempDir::new().unwrap();
                     let storage = FileStorage::new(temp_dir.path().to_path_buf()).unwrap();
                     let mut nkv = NkvCore::new(storage).unwrap();
-                    let result = nkv.put("key1", input).await;
+                    let result = nkv.put("key1", input);
                     black_box(result)
                 },
                 BatchSize::SmallInput,
@@ -58,8 +58,8 @@ fn bench_nkv(c: &mut Criterion) {
                     let temp_dir = TempDir::new().unwrap();
                     let storage = FileStorage::new(temp_dir.path().to_path_buf()).unwrap();
                     let mut nkv = NkvCore::new(storage).unwrap();
-                    nkv.put("key1", data).await;
-                    let result = nkv.put("key1", new_data).await;
+                    let _ = nkv.put("key1", data);
+                    let result = nkv.put("key1", new_data);
                     black_box(result)
                 },
                 BatchSize::SmallInput,
@@ -73,8 +73,7 @@ fn bench_nkv(c: &mut Criterion) {
                     let temp_dir = TempDir::new().unwrap();
                     let storage = FileStorage::new(temp_dir.path().to_path_buf()).unwrap();
                     let mut nkv = NkvCore::new(storage).unwrap();
-                    let rt = Runtime::new().unwrap();
-                    rt.block_on(nkv.put("key1", data));
+                    let _ = nkv.put("key1", data);
                     nkv
                 },
                 |nkv| black_box(nkv.get("key1")),
@@ -93,8 +92,8 @@ fn bench_nkv(c: &mut Criterion) {
                     let storage = FileStorage::new(temp_dir.path().to_path_buf()).unwrap();
                     let mut nkv = NkvCore::new(storage).unwrap();
 
-                    nkv.put("key1", data).await;
-                    let result = nkv.delete("key1").await;
+                    let _ = nkv.put("key1", data);
+                    let result = nkv.delete("key1");
                     black_box(result)
                 },
                 BatchSize::SmallInput, // Adjust based on expected input size

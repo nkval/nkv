@@ -8,15 +8,13 @@
 
 use std::collections::HashMap;
 use std::fmt::{self, Debug};
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::errors::NotifyKeyValueError;
 use crate::request_msg::Message;
 use crate::storage::traits::StorageEngine;
 use crate::trie::{Trie, TrieNode};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tracing::{debug, error};
 
 #[derive(Debug)]
@@ -130,7 +128,7 @@ impl Notification {
     }
 }
 
-type N = Arc<Mutex<Notification>>;
+type N = Arc<std::sync::Mutex<Notification>>;
 
 /// NkvCore - The Heart of the Hierarchical Key-Value System
 ///
@@ -213,7 +211,7 @@ impl<P: StorageEngine> NkvCore<P> {
         Ok(res)
     }
 
-    pub async fn put(&mut self, key: &str, value: Box<[u8]>) -> Result<(), NotifyKeyValueError> {
+    pub fn put(&mut self, key: &str, value: Box<[u8]>) -> Result<(), NotifyKeyValueError> {
         if Trie::<()>::has_wildcard(key) {
             return Err(NotifyKeyValueError::WrongKey(
                 "put does not support wildcards".to_string(),
@@ -225,33 +223,22 @@ impl<P: StorageEngine> NkvCore<P> {
                 key
             )));
         }
-        let vector: Arc<Mutex<Vec<N>>> = Arc::new(Mutex::new(Vec::new()));
+        let vector: Arc<std::sync::Mutex<Vec<N>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let vc = Arc::clone(&vector);
 
-        let capture_and_push: Option<
-            Box<
-                dyn Fn(&TrieNode<N>) -> Pin<Box<dyn Future<Output = ()> + Send>>
-                    + Send
-                    + Sync
-                    + 'static,
-            >,
-        > = Some({
-            Box::new(
-                move |trie_ref: &TrieNode<N>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
-                    let notifier_arc = match trie_ref.value.as_ref() {
-                        Some(value) => Arc::clone(&value),
-                        None => return Box::pin(async {}),
+        let capture_and_push: Option<Box<dyn Fn(&TrieNode<N>) -> () + Send + Sync + 'static>> =
+            Some({
+                Box::new(move |trie_ref: &TrieNode<N>| {
+                    let value_to_store = match trie_ref.value.as_ref() {
+                        Some(value) => value,
+                        None => return (),
                     };
 
-                    let vector_clone = Arc::clone(&vc);
+                    let mut vector_lock = vc.lock().unwrap();
 
-                    Box::pin(async move {
-                        let mut vector_lock = vector_clone.lock().await;
-                        vector_lock.push(notifier_arc);
-                    })
-                },
-            )
-        });
+                    vector_lock.push(value_to_store.clone());
+                })
+            });
 
         self.objects.insert(key, key.into());
         self.storage.put(key, value.clone()).map_err(|err| {
@@ -260,14 +247,14 @@ impl<P: StorageEngine> NkvCore<P> {
         })?;
         debug!("we put value for {}", key);
 
-        let notifiers = self.notifiers.get_mut(key, capture_and_push).await;
+        let notifiers = self.notifiers.get_mut(key, capture_and_push);
 
         match notifiers.len() {
             0 => {} // ignore
             1 => {
                 match notifiers[0]
                     .lock()
-                    .await
+                    .unwrap()
                     .send_update(key.to_string(), value.clone())
                 {
                     Err(err) => error!("failed to send update notification for {}: {}", key, err),
@@ -279,13 +266,11 @@ impl<P: StorageEngine> NkvCore<P> {
             }
         };
 
-        let vector_lock = vector.lock().await;
-        for notifier_arc in vector_lock.iter() {
+        let vector_lock = vector.lock().unwrap();
+        for n_arc in vector_lock.iter() {
             // TODO: write an error log connecting to specific notifier?
-            notifier_arc
-                .lock()
-                .await
-                .send_update(key.to_string(), value.clone())?;
+            let notification_guard = n_arc.lock().unwrap();
+            notification_guard.send_update(key.to_string(), value.clone())?;
         }
 
         Ok(())
@@ -301,48 +286,38 @@ impl<P: StorageEngine> NkvCore<P> {
         return map;
     }
 
-    pub async fn delete(&mut self, key: &str) -> Result<(), NotifyKeyValueError> {
-        let vector: Arc<Mutex<Vec<N>>> = Arc::new(Mutex::new(Vec::new()));
+    pub fn delete(&mut self, key: &str) -> Result<(), NotifyKeyValueError> {
+        let vector: Arc<std::sync::Mutex<Vec<N>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let vc = Arc::clone(&vector);
 
-        let capture_and_push: Option<
-            Box<
-                dyn Fn(&TrieNode<N>) -> Pin<Box<dyn Future<Output = ()> + Send>>
-                    + Send
-                    + Sync
-                    + 'static,
-            >,
-        > = Some({
-            Box::new(
-                move |trie_ref: &TrieNode<N>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
-                    let notifier_arc = match trie_ref.value.as_ref() {
-                        Some(value) => Arc::clone(&value),
-                        None => return Box::pin(async {}),
+        let capture_and_push: Option<Box<dyn Fn(&TrieNode<N>) -> () + Send + Sync + 'static>> =
+            Some({
+                Box::new(move |trie_ref: &TrieNode<N>| {
+                    let value_to_store = match trie_ref.value.as_ref() {
+                        Some(value) => value,
+                        None => return (),
                     };
 
-                    let vector_clone = Arc::clone(&vc);
+                    let mut vector_lock = vc.lock().unwrap();
 
-                    Box::pin(async move {
-                        let mut vector_lock = vector_clone.lock().await;
-                        vector_lock.push(notifier_arc);
-                    })
-                },
-            )
-        });
+                    vector_lock.push(value_to_store.clone());
+                })
+            });
 
-        // delete all
-        let notifiers = self.notifiers.get_mut(key, capture_and_push).await;
+        let notifiers = self.notifiers.get_mut(key, capture_and_push);
 
         // if we have wildcard, we want to delete all children as well
         for n in &notifiers {
-            n.lock().await.unsubscribe_all(key)?
+            n.lock().unwrap().unsubscribe_all(key)?;
         }
 
         // notify all parents that element(s) is(are) being deleted
         {
-            let vec_lock = vector.lock().await;
+            let vec_lock = vector.lock().unwrap();
+
             for n_arc in vec_lock.iter() {
-                n_arc.lock().await.send_close(key.to_string())?;
+                let notification_guard = n_arc.lock().unwrap();
+                notification_guard.send_close(key.to_string())?;
             }
         }
 
@@ -361,32 +336,33 @@ impl<P: StorageEngine> NkvCore<P> {
         Ok(())
     }
 
-    pub async fn subscribe(
+    pub fn subscribe(
         &mut self,
         key: &str,
         uuid: String,
     ) -> Result<mpsc::UnboundedReceiver<Message>, NotifyKeyValueError> {
-        let notifiers = self.notifiers.get_mut(key, None).await;
+        let notifiers = self.notifiers.get_mut(key, None);
 
         let (tx, n) = match notifiers.len() {
             0 => {
-                let n = Arc::new(Mutex::new(Notification::new()));
-                let tx = n.lock().await.subscribe(uuid.clone()).map_err(|err| {
+                let n = Arc::new(std::sync::Mutex::new(Notification::new()));
+
+                let tx = n.lock().unwrap().subscribe(uuid.clone()).map_err(|err| {
                     error!("failed to subscribe: {}", err);
                     err
                 })?;
+
+                // Assuming self.notifiers is the trie structure that accepts Arc<Mutex<Notification>>
                 self.notifiers.insert(key, Arc::clone(&n));
+
                 Ok((tx, n))
             }
             1 => {
-                // do Arc::clone since self.get is immutable
-                // and notifiers are mutable from self.notifiers.get_mut
                 let notification_arc = Arc::clone(&notifiers[0]);
-                let tx = notification_arc.lock().await.subscribe(uuid.clone())?;
-
+                let tx = notification_arc.lock().unwrap().subscribe(uuid.clone())?;
                 Ok((tx, notification_arc))
             }
-            // TODO: add new error
+            // TODO: add new error (assuming you want to keep the error path)
             _ => Err(NotifyKeyValueError::NotFound),
         }?;
 
@@ -395,7 +371,7 @@ impl<P: StorageEngine> NkvCore<P> {
         let map = self.get(key);
         for (key, value) in map {
             // WARN: copies data, swtich to Vec<u8>?
-            n.lock().await.send_update_to_subscription(
+            n.lock().unwrap().send_update_to_subscription(
                 uuid.clone(),
                 key,
                 value.to_vec().into_boxed_slice(),
@@ -405,19 +381,15 @@ impl<P: StorageEngine> NkvCore<P> {
         Ok(tx)
     }
 
-    pub async fn unsubscribe(
-        &mut self,
-        key: &str,
-        uuid: String,
-    ) -> Result<(), NotifyKeyValueError> {
+    pub fn unsubscribe(&mut self, key: &str, uuid: String) -> Result<(), NotifyKeyValueError> {
         // XXX: should there be a wildcard restriction?
-        let notifiers = self.notifiers.get_mut(key, None).await;
+        let notifiers = self.notifiers.get_mut(key, None);
 
         match notifiers.len() {
             1 => {
                 notifiers[0]
                     .lock()
-                    .await
+                    .unwrap()
                     .unsubscribe(key.to_string(), &uuid)
                     .map_err(|err| {
                         error!("failed to unsubscribe for key {}: {}", key, err);
@@ -430,47 +402,37 @@ impl<P: StorageEngine> NkvCore<P> {
             _ => Err(NotifyKeyValueError::NotFound),
         }
     }
-    pub async fn trace(&mut self, key: &str) -> Result<Vec<String>, NotifyKeyValueError> {
-        let vector: Arc<Mutex<Vec<N>>> = Arc::new(Mutex::new(Vec::new()));
+    pub fn trace(&mut self, key: &str) -> Result<Vec<String>, NotifyKeyValueError> {
+        let vector: Arc<std::sync::Mutex<Vec<N>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
         let vc = Arc::clone(&vector);
 
-        let capture_and_push: Option<
-            Box<
-                dyn Fn(&TrieNode<N>) -> Pin<Box<dyn Future<Output = ()> + Send>>
-                    + Send
-                    + Sync
-                    + 'static,
-            >,
-        > = Some({
-            Box::new(
-                move |trie_ref: &TrieNode<N>| -> Pin<Box<dyn Future<Output = ()> + Send>> {
-                    let notifier_arc = match trie_ref.value.as_ref() {
-                        Some(value) => Arc::clone(&value),
-                        None => return Box::pin(async {}),
+        let capture_and_push: Option<Box<dyn Fn(&TrieNode<N>) -> () + Send + Sync + 'static>> =
+            Some({
+                Box::new(move |trie_ref: &TrieNode<N>| {
+                    let value_to_store = match trie_ref.value.as_ref() {
+                        Some(value) => value,
+                        None => return (),
                     };
 
-                    let vector_clone = Arc::clone(&vc);
+                    let mut vector_lock = vc.lock().unwrap();
 
-                    Box::pin(async move {
-                        let mut vector_lock = vector_clone.lock().await;
-                        vector_lock.push(notifier_arc);
-                    })
-                },
-            )
-        });
+                    vector_lock.push(value_to_store.clone());
+                })
+            });
 
         let mut cloned_vec: Vec<String> = Vec::new();
 
         // include
-        for n in self.notifiers.get_mut(key, capture_and_push).await {
-            for key in n.lock().await.subscriptions.keys().cloned() {
+        for n in self.notifiers.get_mut(key, capture_and_push) {
+            for key in n.lock().unwrap().subscriptions.keys().cloned() {
                 cloned_vec.push(key);
             }
         }
 
-        let vector_lock = vector.lock().await;
-        for notifier_arc in vector_lock.iter() {
-            for key in notifier_arc.lock().await.subscriptions.keys().cloned() {
+        let vector_lock = vector.lock().unwrap();
+        for n_arc in vector_lock.iter() {
+            let notification_guard = n_arc.lock().unwrap();
+            for key in notification_guard.subscriptions.keys().cloned() {
                 cloned_vec.push(key);
             }
         }
@@ -510,7 +472,7 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
-        nkv.put("key1", data.clone()).await?;
+        nkv.put("key1", data.clone())?;
 
         let result = nkv.get("key1");
         let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
@@ -539,9 +501,9 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
-        nkv.put("key1", data.clone()).await?;
+        nkv.put("key1", data.clone())?;
 
-        nkv.delete("key1").await?;
+        nkv.delete("key1")?;
         let result = nkv.get("key1");
         assert_eq!(result, HashMap::new());
 
@@ -555,10 +517,10 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
-        nkv.put("key1", data).await?;
+        nkv.put("key1", data)?;
 
         let new_data: Box<[u8]> = Box::new([5, 6, 7, 8, 9]);
-        nkv.put("key1", new_data.clone()).await?;
+        nkv.put("key1", new_data.clone())?;
 
         let result = nkv.get("key1");
         let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
@@ -579,9 +541,9 @@ mod tests {
         {
             let storage = FileStorage::new(path.clone())?;
             let mut nkv = NkvCore::new(storage)?;
-            nkv.put("key1", data1.clone()).await?;
-            nkv.put("key2", data2.clone()).await?;
-            nkv.put("key3", data3.clone()).await?;
+            nkv.put("key1", data1.clone())?;
+            nkv.put("key2", data2.clone())?;
+            nkv.put("key3", data3.clone())?;
         }
 
         let storage = FileStorage::new(path)?;
@@ -615,9 +577,9 @@ mod tests {
             key: "key1".to_string(),
             value: data.clone(),
         };
-        nkv.put("key1", data).await?;
+        nkv.put("key1", data)?;
 
-        let mut rx = nkv.subscribe("key1", "uuid1".to_string()).await?;
+        let mut rx = nkv.subscribe("key1", "uuid1".to_string())?;
         if let Some(msg) = rx.recv().await {
             assert_eq!(msg, Message::Hello)
         } else {
@@ -633,7 +595,7 @@ mod tests {
         }
 
         let new_data: Box<[u8]> = Box::new([5, 6, 7, 8, 9]);
-        nkv.put("key1", new_data.clone()).await?;
+        nkv.put("key1", new_data.clone())?;
 
         if let Some(msg) = rx.recv().await {
             assert_eq!(
@@ -662,9 +624,9 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
-        nkv.put("ks1.ks2.ks3.k", data).await?;
+        nkv.put("ks1.ks2.ks3.k", data)?;
 
-        let mut rx = nkv.subscribe("ks1", "uuid1".to_string()).await?;
+        let mut rx = nkv.subscribe("ks1", "uuid1".to_string())?;
         if let Some(msg) = rx.recv().await {
             assert_eq!(msg, Message::Hello)
         } else {
@@ -672,7 +634,7 @@ mod tests {
         }
 
         let new_data: Box<[u8]> = Box::new([5, 6, 7, 8, 9]);
-        nkv.put("ks1.ks2.ks4", new_data.clone()).await?;
+        nkv.put("ks1.ks2.ks4", new_data.clone())?;
 
         if let Some(msg) = rx.recv().await {
             assert_eq!(
@@ -691,7 +653,7 @@ mod tests {
         expected.insert("ks1.ks2.ks4".to_string(), Arc::from(new_data));
         assert_eq!(result, expected);
 
-        nkv.delete("ks1.ks2.ks4").await.unwrap();
+        nkv.delete("ks1.ks2.ks4").unwrap();
 
         if let Some(msg) = rx.recv().await {
             assert_eq!(
@@ -718,9 +680,9 @@ mod tests {
             key: "key1".to_string(),
             value: data.clone(),
         };
-        nkv.put("key1", data).await?;
+        nkv.put("key1", data)?;
 
-        let mut rx = nkv.subscribe("key1", "uuid1".to_string()).await?;
+        let mut rx = nkv.subscribe("key1", "uuid1".to_string())?;
         if let Some(msg) = rx.recv().await {
             assert_eq!(msg, Message::Hello)
         } else {
@@ -734,7 +696,7 @@ mod tests {
         } else {
             panic!("Should receive initial UPDATE msg");
         }
-        nkv.unsubscribe("key1", "uuid1".to_string()).await?;
+        nkv.unsubscribe("key1", "uuid1".to_string())?;
 
         if let Some(msg) = rx.recv().await {
             assert_eq!(
@@ -810,9 +772,9 @@ mod tests {
         //     |         \             -> data1
         //     -> data2  |
         //                -> data3
-        nkv.put("ks1.ks2.ks3.ks4.k", data1.clone()).await?;
-        nkv.put("ks1", data2.clone()).await?;
-        nkv.put("ks1.ks2", data3.clone()).await?;
+        nkv.put("ks1.ks2.ks3.ks4.k", data1.clone())?;
+        nkv.put("ks1", data2.clone())?;
+        nkv.put("ks1.ks2", data3.clone())?;
 
         let result = nkv.get("ks1.ks2.ks3.ks4.k");
         let mut expected: HashMap<String, Arc<[u8]>> = HashMap::new();
@@ -846,43 +808,43 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3, 4, 5]);
-        nkv.put("ks1.ks2.ks3.k", data.clone()).await?;
+        nkv.put("ks1.ks2.ks3.k", data.clone())?;
 
-        let result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        let result = nkv.trace("ks1.ks2.ks3.k").unwrap();
         assert_eq!(result.len(), 0);
 
-        let result = nkv.trace("non.existent.key").await.unwrap();
+        let result = nkv.trace("non.existent.key").unwrap();
         assert_eq!(result.len(), 0);
 
-        let mut rx = nkv.subscribe("ks1", "uuid1".to_string()).await?;
+        let mut rx = nkv.subscribe("ks1", "uuid1".to_string())?;
         if let Some(msg) = rx.recv().await {
             assert_eq!(msg, Message::Hello)
         } else {
             panic!("Should recieve msg");
         }
 
-        let result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        let result = nkv.trace("ks1.ks2.ks3.k").unwrap();
         assert_eq!(result, vec!["uuid1".to_string()]);
 
-        let mut rx = nkv.subscribe("ks1.ks2", "uuid2".to_string()).await?;
+        let mut rx = nkv.subscribe("ks1.ks2", "uuid2".to_string())?;
         if let Some(msg) = rx.recv().await {
             assert_eq!(msg, Message::Hello)
         } else {
             panic!("Should recieve msg");
         }
-        let mut result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        let mut result = nkv.trace("ks1.ks2.ks3.k").unwrap();
         assert_eq!(
             result.sort(),
             vec!["uuid1".to_string(), "uuid2".to_string()].sort()
         );
 
-        let mut rx = nkv.subscribe("ks1.ks2.ks3", "uuid3".to_string()).await?;
+        let mut rx = nkv.subscribe("ks1.ks2.ks3", "uuid3".to_string())?;
         if let Some(msg) = rx.recv().await {
             assert_eq!(msg, Message::Hello)
         } else {
             panic!("Should recieve msg");
         }
-        let mut result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        let mut result = nkv.trace("ks1.ks2.ks3.k").unwrap();
         assert_eq!(
             result.sort(),
             vec![
@@ -897,7 +859,7 @@ mod tests {
             key: "ks1.ks2.ks3.k".to_string(),
             value: data.clone(),
         };
-        let mut rx = nkv.subscribe("ks1.ks2.ks3.k", "uuid4".to_string()).await?;
+        let mut rx = nkv.subscribe("ks1.ks2.ks3.k", "uuid4".to_string())?;
         if let Some(msg) = rx.recv().await {
             assert_eq!(msg, Message::Hello)
         } else {
@@ -911,7 +873,7 @@ mod tests {
         } else {
             panic!("Should receive initial UPDATE msg");
         }
-        let mut result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        let mut result = nkv.trace("ks1.ks2.ks3.k").unwrap();
         assert_eq!(
             result.sort(),
             vec![
@@ -923,8 +885,7 @@ mod tests {
             .sort()
         );
 
-        nkv.unsubscribe("ks1.ks2.ks3.k", "uuid4".to_string())
-            .await?;
+        nkv.unsubscribe("ks1.ks2.ks3.k", "uuid4".to_string())?;
         if let Some(msg) = rx.recv().await {
             assert_eq!(
                 msg,
@@ -936,7 +897,7 @@ mod tests {
             panic!("Should recieve msg");
         }
 
-        let result = nkv.trace("ks1.ks2.ks3.k").await.unwrap();
+        let result = nkv.trace("ks1.ks2.ks3.k").unwrap();
         assert!(!result.contains(&"uuid4".to_string()));
 
         Ok(())
@@ -953,13 +914,13 @@ mod tests {
         let data3: Box<[u8]> = Box::new([7, 8, 9]);
         let data4: Box<[u8]> = Box::new([10, 11, 12]);
 
-        nkv.put("ks1.child1", data1.clone()).await?;
-        nkv.put("ks1.child2", data2.clone()).await?;
-        nkv.put("ks1.deep.child", data3.clone()).await?;
-        nkv.put("ks2.child", data4.clone()).await?;
+        nkv.put("ks1.child1", data1.clone())?;
+        nkv.put("ks1.child2", data2.clone())?;
+        nkv.put("ks1.deep.child", data3.clone())?;
+        nkv.put("ks2.child", data4.clone())?;
 
         // Delete all children of ks1
-        nkv.delete("ks1.*").await?;
+        nkv.delete("ks1.*")?;
 
         // ks1 children should be gone
         assert_eq!(nkv.get("ks1.child1"), HashMap::new());
@@ -983,11 +944,11 @@ mod tests {
         let data1: Box<[u8]> = Box::new([1, 2, 3]);
         let data2: Box<[u8]> = Box::new([4, 5, 6]);
 
-        nkv.put("key1", data1.clone()).await?;
-        nkv.put("ks1.child", data2.clone()).await?;
+        nkv.put("key1", data1.clone())?;
+        nkv.put("ks1.child", data2.clone())?;
 
         // Delete everything
-        nkv.delete("*").await?;
+        nkv.delete("*")?;
 
         assert_eq!(nkv.get("key1"), HashMap::new());
         assert_eq!(nkv.get("ks1.child"), HashMap::new());
@@ -1005,7 +966,7 @@ mod tests {
         let data: Box<[u8]> = Box::new([1, 2, 3]);
 
         // Test keys that are just dots
-        assert!(nkv.put("", data.clone()).await.is_err());
+        assert!(nkv.put("", data.clone()).is_err());
 
         let result = nkv.get("*");
         assert!(result.is_empty());
@@ -1020,7 +981,7 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         // Subscribe to key that doesn't exist yet
-        let mut rx = nkv.subscribe("future.key", "uuid1".to_string()).await?;
+        let mut rx = nkv.subscribe("future.key", "uuid1".to_string())?;
 
         if let Some(msg) = rx.recv().await {
             assert_eq!(msg, Message::Hello)
@@ -1030,7 +991,7 @@ mod tests {
 
         // Now create the key
         let data: Box<[u8]> = Box::new([1, 2, 3]);
-        nkv.put("future.key", data.clone()).await?;
+        nkv.put("future.key", data.clone())?;
 
         if let Some(msg) = rx.recv().await {
             assert_eq!(
@@ -1053,12 +1014,12 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         let initial_data: Box<[u8]> = Box::new([1, 2, 3]);
-        nkv.put("shared.key", initial_data.clone()).await?;
+        nkv.put("shared.key", initial_data.clone())?;
 
         // Multiple subscribers to same key
-        let mut rx1 = nkv.subscribe("shared.key", "uuid1".to_string()).await?;
-        let mut rx2 = nkv.subscribe("shared.key", "uuid2".to_string()).await?;
-        let mut rx3 = nkv.subscribe("shared.key", "uuid3".to_string()).await?;
+        let mut rx1 = nkv.subscribe("shared.key", "uuid1".to_string())?;
+        let mut rx2 = nkv.subscribe("shared.key", "uuid2".to_string())?;
+        let mut rx3 = nkv.subscribe("shared.key", "uuid3".to_string())?;
 
         // Expected initial update message (Old data update)
         let expected_initial_update_msg = Message::Update {
@@ -1088,7 +1049,7 @@ mod tests {
 
         // Update the key
         let new_data: Box<[u8]> = Box::new([4, 5, 6]);
-        nkv.put("shared.key", new_data.clone()).await?;
+        nkv.put("shared.key", new_data.clone())?;
 
         // Expected new update message
         let expected_new_update_msg = Message::Update {
@@ -1115,12 +1076,12 @@ mod tests {
 
         let data1: Box<[u8]> = Box::new([1, 2, 3]);
         let data2: Box<[u8]> = Box::new([4, 5, 6]);
-        nkv.put("key1", data1.clone()).await?;
-        nkv.put("key2", data2.clone()).await?;
+        nkv.put("key1", data1.clone())?;
+        nkv.put("key2", data2.clone())?;
 
         // Same UUID subscribing to different keys
-        let mut rx1 = nkv.subscribe("key1", "same_uuid".to_string()).await?;
-        let mut rx2 = nkv.subscribe("key2", "same_uuid".to_string()).await?;
+        let mut rx1 = nkv.subscribe("key1", "same_uuid".to_string())?;
+        let mut rx2 = nkv.subscribe("key2", "same_uuid".to_string())?;
 
         // Consume hello messages
         rx1.recv().await;
@@ -1131,7 +1092,7 @@ mod tests {
         rx2.recv().await;
 
         // Unsubscribe from key1 only
-        nkv.unsubscribe("key1", "same_uuid".to_string()).await?;
+        nkv.unsubscribe("key1", "same_uuid".to_string())?;
 
         if let Some(msg) = rx1.recv().await {
             assert_eq!(
@@ -1146,7 +1107,7 @@ mod tests {
 
         // Update key2 - should still receive notification
         let new_data: Box<[u8]> = Box::new([7, 8, 9]);
-        nkv.put("key2", new_data.clone()).await?;
+        nkv.put("key2", new_data.clone())?;
 
         if let Some(msg) = rx2.recv().await {
             assert_eq!(
@@ -1169,14 +1130,14 @@ mod tests {
         let mut nkv = NkvCore::new(storage)?;
 
         let data: Box<[u8]> = Box::new([1, 2, 3]);
-        nkv.put("temp.key", data.clone()).await?;
+        nkv.put("temp.key", data.clone())?;
 
         // Subscribe to parent keyspace
-        let mut rx = nkv.subscribe("temp", "uuid1".to_string()).await?;
+        let mut rx = nkv.subscribe("temp", "uuid1".to_string())?;
         rx.recv().await; // consume hello
 
         // Delete the key
-        nkv.delete("temp.key").await?;
+        nkv.delete("temp.key")?;
 
         if let Some(msg) = rx.recv().await {
             assert_eq!(
@@ -1199,14 +1160,14 @@ mod tests {
 
         let data1: Box<[u8]> = Box::new([1, 2, 3]);
         let data2: Box<[u8]> = Box::new([4, 5, 6]);
-        nkv.put("batch.key1", data1.clone()).await?;
-        nkv.put("batch.key2", data2.clone()).await?;
+        nkv.put("batch.key1", data1.clone())?;
+        nkv.put("batch.key2", data2.clone())?;
 
-        let mut rx = nkv.subscribe("batch", "uuid1".to_string()).await?;
+        let mut rx = nkv.subscribe("batch", "uuid1".to_string())?;
         rx.recv().await; // consume hello
 
         // Wildcard delete
-        nkv.delete("batch.*").await?;
+        nkv.delete("batch.*")?;
 
         if let Some(msg) = rx.recv().await {
             if let Message::Close { key } = msg {
@@ -1224,18 +1185,18 @@ mod tests {
 
         // Test with large data (1MB)
         let large_data: Box<[u8]> = vec![42u8; 1024 * 1024].into_boxed_slice();
-        nkv.put("large.data", large_data.clone()).await?;
+        nkv.put("large.data", large_data.clone())?;
 
         let result = nkv.get("large.data");
         assert_eq!(result.len(), 1);
         assert_eq!(result["large.data"].len(), 1024 * 1024);
 
         // Test subscription with large data
-        let mut rx = nkv.subscribe("large.data", "uuid1".to_string()).await?;
+        let mut rx = nkv.subscribe("large.data", "uuid1".to_string())?;
         rx.recv().await; // consume hello
 
         let new_large_data: Box<[u8]> = vec![84u8; 1024 * 1024].into_boxed_slice();
-        nkv.put("large.data", new_large_data.clone()).await?;
+        nkv.put("large.data", new_large_data.clone())?;
 
         if let Some(msg) = rx.recv().await {
             if let Message::Update { key, value } = msg {
@@ -1256,7 +1217,6 @@ mod tests {
 
         assert!(nkv
             .unsubscribe("nonexistent.key", "uuid1".to_string())
-            .await
             .is_err());
 
         Ok(())
