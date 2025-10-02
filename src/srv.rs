@@ -128,7 +128,7 @@ impl Server {
             loop {
                 tokio::select! {
                     Some(req) = put_rx.recv() => {
-                        let err = match nkv.put(&req.key, req.value).await {
+                        let err = match nkv.put(&req.key, req.value) {
                             Ok(_) => NotifyKeyValueError::NoError,
                             Err(e) => e,
                         };
@@ -149,7 +149,7 @@ impl Server {
                         }
                    }
                    Some(req) = del_rx.recv() => {
-                       let err = match nkv.delete(&req.key).await {
+                       let err = match nkv.delete(&req.key) {
                            Ok(_) => NotifyKeyValueError::NoError,
                            Err(e) => e,
                        };
@@ -160,7 +160,7 @@ impl Server {
                        if let Some(n) = notifiers.get_mut(&req.key) {
                            n.subscribe(req.uuid, req.writer).await;
                        } else {
-                           match nkv.subscribe(&req.key, req.uuid.clone()).await {
+                           match nkv.subscribe(&req.key, req.uuid.clone()) {
                                Err(e) => { err = e }
                                Ok(rx) => {
                                    let n = Notifier::new(rx);
@@ -172,14 +172,14 @@ impl Server {
                        let _ = req.resp_tx.send(err).await;
                    }
                    Some(req) = unsub_rx.recv() => {
-                       let err = match nkv.unsubscribe(&req.key, req.uuid).await {
+                       let err = match nkv.unsubscribe(&req.key, req.uuid) {
                            Ok(_) => NotifyKeyValueError::NoError,
                            Err(e) => e,
                        };
                        let _ = req.resp_tx.send(err).await;
                    }
                    Some(req) = trace_rx.recv() => {
-                        match nkv.trace(&req.key).await {
+                        match nkv.trace(&req.key) {
                             Ok(vals) => {
                                 if vals.len() > 0 {
                                     let _ = req.resp_tx.send(NkvTraceResp {
