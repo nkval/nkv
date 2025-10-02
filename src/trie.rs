@@ -2,8 +2,6 @@
 
 use std::collections::HashMap;
 use std::fmt::{self, Display};
-use std::future::Future;
-use std::pin::Pin;
 
 #[derive(Debug)]
 pub enum TrieError {
@@ -159,24 +157,17 @@ impl<T> Trie<T> {
         }
     }
 
-    pub async fn get_mut(
+    pub fn get_mut(
         &mut self,
         key: &str,
-        op: Option<
-            Box<
-                dyn Fn(&TrieNode<T>) -> Pin<Box<dyn Future<Output = ()> + Send>>
-                    + Send
-                    + Sync
-                    + 'static,
-            >,
-        >,
+        op: Option<Box<dyn Fn(&TrieNode<T>) -> () + Send + Sync + 'static>>,
     ) -> Vec<&T> {
         let parts: Vec<&str> = key.split('.').collect();
         let mut node = &self.root;
 
         for part in parts {
             if let Some(ref f) = op {
-                f(node).await;
+                f(node);
             }
             if part == Self::WILDCARD {
                 return self.collect_values(node);
