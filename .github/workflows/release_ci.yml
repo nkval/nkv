@@ -37,13 +37,6 @@ jobs:
             ${{ secrets.DOCKER_USR }}/nkv:${{ github.event.release.tag_name }}
             ${{ secrets.DOCKER_USR }}/nkv:latest
 
-      - name: Generate server artifact attestation
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
-          subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
-
   push_to_ghcr:
     runs-on: ubuntu-latest
     permissions:
