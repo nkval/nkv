@@ -4,8 +4,11 @@ on:
   release:
     types: [published]
 
+env:
+  IMAGE_NAME: ghtoken_product_demo
+
 jobs:
-  push_to_registry:
+  push_to_dockerhub:
     name: Push Docker image to Docker Hub
     runs-on: ubuntu-latest
     permissions:
@@ -33,8 +36,6 @@ jobs:
           tags: |
             ${{ secrets.DOCKER_USR }}/nkv:${{ github.event.release.tag_name }}
             ${{ secrets.DOCKER_USR }}/nkv:latest
-            ghcr.io/nkval/nkv:${{ github.event.release.tag_name }}
-            ghcr.io/nkval/nkv:latest
 
       - name: Generate server artifact attestation
         uses: actions/attest-build-provenance@v1
@@ -42,3 +43,43 @@ jobs:
           subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME}}
           subject-digest: ${{ steps.push.outputs.digest }}
           push-to-registry: true
+
+  push_to_ghcr:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build image
+        run: docker build . --file Dockerfile --tag nkv --label "runnumber=${GITHUB_RUN_ID}"
+
+      - name: Log in to registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Push image
+        run: |
+          IMAGE_NAME=nkv
+          IMAGE_ID=ghcr.io/${{ github.repository_owner }}/$IMAGE_NAME
+
+          # Normalize image name to lowercase
+          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+
+          # Extract version from Git ref (e.g., refs/tags/v1.2.3 -> 1.2.3)
+          VERSION=$(echo "${{ github.ref }}" | sed -E 's#.*/##')
+          VERSION=$(echo "$VERSION" | sed -E 's/^v//')
+
+          # If not a valid semver (x.y.z), generate one using run number
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            VERSION="0.0.${GITHUB_RUN_NUMBER}"
+          fi
+
+          echo "IMAGE_ID=$IMAGE_ID"
+          echo "VERSION=$VERSION"
+
+          docker tag $IMAGE_NAME $IMAGE_ID:$VERSION
+          docker push $IMAGE_ID:$VERSION
+
+
