@@ -60,11 +60,14 @@ cargo build --release
 
 And you'll see `nkv-server` and `nkv-client` binaries in `target/release` folder
 
-Start a server by running the binary `nkv-server`, passing it the hostname and port on which to listen,
-e.g. `localhost:8000`. If you pass none, it defaults to `localhost:4222`. 
+Start a server by running the binary `nkv-server`. You can specify path to unix socket
+via --addr parameter, default value is `/tmp/nkv/nkv.sock`
+
+You can specify log level, where to store logs and directory to store data, for more
+information run `nkv-server --help` to see available flags
 
 ```sh
-nkv-server localhost:4222
+./target/release/nkv-server --level debug
 ```
 
 Then you can use a client to access the server.
@@ -75,7 +78,7 @@ protocol.
 To run the client binary, you can use the following commands:
 
 ```sh
-$ nkv-client localhost:4222
+$ ./target/release/nkv-client
 get key1
 put key1 value1
 delete key1
@@ -87,8 +90,14 @@ Each line starts with the command, followed by the arguments. Enter the `help` c
 for a list of available commands. Each command ends with a newline character, after which the server
 responds.
 
-The first and only argument to `nkv-client` is the hostname and port on which the server is running.
-If none is provided, it defaults to `localhost:4222`.
+You can specify path to UNIX socket via --addr argument, you can also run single shot commands, i.e.
+
+```bash
+./target/release/nkv-client get k1
+```
+
+depending on your shell, you might need to backslash * symbol. This could be useful if you're running
+nkv inside bash script.
 
 For detailed info about design you can find [here](./docs/DESIGN.md)
 
